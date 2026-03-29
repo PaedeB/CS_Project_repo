@@ -1,3 +1,3 @@
-print("Hello World")
+import strealit as st
 
-print("Hello Again")
+st.write("Horray, we connected everything")
