@@ -1,3 +1,3 @@
-import strealit as st
+import streamlit as st
 
 st.write("Horray, we connected everything")
