@@ -1,1 +1,13 @@
 streamlit
+pandas
+numpy
+plotly.graph_objects
+plotly.express
+requests
+sqlite3
+xml.etree.ElementTree
+datetime
+sklearn.ensemble
+sklearn.preprocessing
+json
+time
