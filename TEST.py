@@ -16,7 +16,8 @@ print("test")
 
 
 ## Funktioniert nicht
-import plotly.graph_objects as go
-import plotly.express as px
+
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
+import plotly.graph_objects as go
+import plotly.express as px
