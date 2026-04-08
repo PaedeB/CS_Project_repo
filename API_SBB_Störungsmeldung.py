@@ -1,36 +1,44 @@
-# ============================================================
+# ========================================================
 # API: SBB STÖRUNGSMELDUNGEN
-# Lädt aktuelle Störungen als RSS-Feed
-# ============================================================
+# Lädt aktuelle Störungen über die offizielle SBB Open Data API
+# ========================================================
+
+import requests
+import pandas as pd
+import streamlit as st
+
+# API URL
+API_STOERUNGEN = "https://data.sbb.ch/api/explore/v2.1/catalog/datasets/rail-traffic-information/records"
 
 @st.cache_data(ttl=300)  # 5 Minuten Cache
 def stoerungen_laden_api():
     """
-    Lädt aktuelle SBB-Störungsmeldungen.
-
-    TODO für die Gruppe: Den korrekten RSS-Feed-Link der SBB einfügen.
-    Alternativ kann auch die offizielle SBB-Störungsseite gescrapt werden.
-    Überprüft auf: https://www.sbb.ch/de/kaufen/pages/fahrplan/aktuell.xhtml
+    Lädt aktuelle SBB-Störungsmeldungen via Open Data API.
+    Gibt einen pandas DataFrame zurück mit Datum, Störung und Beschreibung.
     """
     try:
-        response = requests.get(API_STOERUNGEN, timeout=10)
+        params = {
+            "limit": 100,
+            "order_by": "startdatetime desc"
+        }
+        response = requests.get(API_STOERUNGEN, params=params, timeout=10)
         response.raise_for_status()
 
-        # XML parsen
-        root = ET.fromstring(response.content)
+        data = response.json()
         stoerungen = []
-        for item in root.findall(".//item"):
-            titel = item.findtext("title", "")
-            beschr = item.findtext("description", "")
-            datum  = item.findtext("pubDate", "")
+
+        for item in data["results"]:
             stoerungen.append({
-                "Datum":        datum,
-                "Störung":      titel,
-                "Beschreibung": beschr
+                "Datum":        item.get("startdatetime", ""),
+                "Störung":      item.get("title", ""),
+                "Beschreibung": item.get("description", ""),
+                "Typ":          item.get("type", ""),
+                "Ende":         item.get("enddatetime", "")
             })
+
         return pd.DataFrame(stoerungen)
 
     except Exception as e:
-        # Fallback: Leere Liste mit Hinweis
-        # (API-Link muss noch verifiziert werden)
-        return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung"])
+        # Fallback: leere Liste mit Hinweis
+        st.warning(f"API nicht erreichbar: {e}")
+        return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung", "Typ", "Ende"])
