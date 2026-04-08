@@ -42,7 +42,7 @@ def stoerungen_laden_api():
         # Fallback: leere Liste mit Hinweis
         st.warning(f"API nicht erreichbar: {e}")
         return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung", "Typ", "Ende"])
-    
-    if __name__ == "__main__":
-    df = stoerungen_laden_api()
-    print(df.head())
+
+if __name__ == "__main__":
+[TAB]df = stoerungen_laden_api()
+[TAB]print(df.head())
