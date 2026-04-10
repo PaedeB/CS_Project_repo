@@ -1,9 +1,10 @@
+
 import streamlit as st #diese und folgende 3 Zeilen braucht es nur einmal im gesamten Code
 import requests
 import pandas as pd
 from datetime import datetime
 
-   # ============================================================
+# ============================================================
 # TEST-DATEI FÜR VS CODE (kein Streamlit nötig)
 # ============================================================
 
@@ -204,3 +205,14 @@ if __name__ == "__main__":
         print("Keine Abfahrten gefunden.")
     else:
         print(df_abfahrten.to_string(index=False))
+
+
+if __name__ == "__main__":
+
+    # --- Diagnose: ersten Record anzeigen um Feldnamen zu sehen ---
+    print("\n--- DIAGNOSE: Feldnamen prüfen ---")
+    r = requests.get(API_SBB_IST, params={"limit": 1}, timeout=10)
+    print(r.status_code)
+    record = r.json().get("results", [{}])[0]
+    for key, value in record.items():
+        print(f"  {key}: {value}")
