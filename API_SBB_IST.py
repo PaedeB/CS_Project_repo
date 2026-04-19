@@ -1,14 +1,13 @@
-
-import streamlit as st #diese und folgende 3 Zeilen braucht es nur einmal im gesamten Code
-import requests
-import pandas as pd
-from datetime import datetime
-
 # ============================================================
 # TEST-DATEI FÜR VS CODE (kein Streamlit nötig)
 # ============================================================
 
-# Streamlit-Ersatz: Decorator und Warning einfach deaktivieren
+import requests
+import pandas as pd
+import urllib.parse
+from datetime import datetime, date
+
+
 def st_cache_dummy(ttl=None):
     def decorator(func):
         return func
@@ -19,7 +18,7 @@ class st:
 
     @staticmethod
     def warning(msg):
-        print(f"[WARNING] {msg}") # bis hier später alles noch rauslöschen, da nur für code testen
+        print(f"[WARNING] {msg}")
 
 
 # ============================================================
@@ -30,23 +29,53 @@ class st:
 
 API_SBB_IST = "https://data.sbb.ch/api/explore/v2.1/catalog/datasets/ist-daten-sbb/records"
 
-
-@st.cache_data(ttl=120)  # 2 Minuten Cache
-def verbindungen_laden(von="Zürich HB", nach="Bern", anzahl=10):
+def parse_bool(value):
     """
-    Rekonstruiert Verbindungen zwischen zwei Bahnhöfen aus den SBB IST-Daten.
-    Da die API haltepunktbasiert ist, sind zwei Abfragen nötig:
-      1. Alle Abfahrten ab Startbahnhof laden
-      2. Prüfen, welche Züge davon auch am Zielbahnhof halten
-    Die Züge werden über 'fahrt_bezeichner' verknüpft.
+    Wandelt API-Werte sicher in Boolean um.
+    Das API liefert teilweise den String "false"/"true" statt Boolean.
+    In Python ist bool("false") == True (nicht-leerer String!), deshalb
+    muss explizit auf den String-Inhalt geprüft werden.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return False
+
+
+def neuestes_datum_holen():
+    """
+    Holt das neueste verfügbare betriebstag aus dem Dataset.
+    Das Dataset wird nicht täglich aktualisiert, deshalb kann
+    'heute' im Dataset schlicht nicht existieren.
     """
     try:
-        # --- [1] Schritt 1: Abfahrten ab Startbahnhof laden ---
-        # "where": filtert nach Haltepunkt und schliesst ausgefallene Züge aus
-        # "order_by": sortiert nach geplanter Abfahrtszeit aufsteigend
+        params = {"limit": 1, "order_by": "betriebstag DESC"}
+        r = requests.get(API_SBB_IST, params=params, timeout=10)
+        r.raise_for_status()
+        records = r.json().get("results", [])
+        if records:
+            return records[0].get("betriebstag", "")
+        return ""
+    except requests.exceptions.RequestException:
+        return ""
+
+
+@st.cache_data(ttl=120)
+def verbindungen_laden(von="Zürich HB", nach="Bern", anzahl=10):
+    try:
+        neuestes_datum = neuestes_datum_holen()
+        print(f"[INFO] Verwende betriebstag: {neuestes_datum}")
+
+        # --- [1] Nur IC/IR ab Startbahnhof laden ---
+        # verkehrsmittel_text filtert S-Bahnen heraus → viel weniger Records nötig
         params_von = {
-            "where": f'haltestellen_name="{von}" AND faellt_aus_tf=false',
-            "limit": 50,  # mehr laden als nötig, da nicht alle nach Bern fahren
+            "refine": [
+                f"haltestellen_name:{von}",
+                f"betriebstag:{neuestes_datum}",
+            ],
+            "where": 'verkehrsmittel_text in ("IC", "IR", "EC", "ICE", "RE")',
+            "limit": 100,
             "order_by": "abfahrtszeit ASC",
         }
         r_von = requests.get(API_SBB_IST, params=params_von, timeout=10)
@@ -54,75 +83,67 @@ def verbindungen_laden(von="Zürich HB", nach="Bern", anzahl=10):
         records_von = r_von.json().get("results", [])
 
         if not records_von:
+            st.warning(f"Keine IC/IR Records für '{von}' gefunden.")
             return pd.DataFrame()
 
-        # --- [2] Fahrt-IDs (eindeutige Zug-Identifikation) extrahieren ---
-        # "fahrt_bezeichner" ist der Schlüssel, über den wir beide Abfragen verknüpfen
+        # --- [2] Fahrt-IDs extrahieren ---
         fahrt_ids = list({
             r["fahrt_bezeichner"]
             for r in records_von
             if r.get("fahrt_bezeichner")
         })
 
-        # --- [3] Schritt 2: Welche dieser Züge halten auch in Bern? ---
-        # Opendatasoft-Syntax: fahrt_bezeichner in ("id1", "id2", ...)
-        ids_filter = ", ".join([f'"{fid}"' for fid in fahrt_ids[:30]])
+        # --- [3] Welche dieser Züge halten auch am Zielbahnhof? ---
+        # where mit AND kombiniert Station + fahrt_bezeichner-Liste
+        ids_filter  = ", ".join([f'"{fid}"' for fid in fahrt_ids[:50]])
         params_nach = {
+            "refine": f"betriebstag:{neuestes_datum}",
             "where": f'haltestellen_name="{nach}" AND fahrt_bezeichner in ({ids_filter})',
-            "limit": 50,
+            "limit": 100,
         }
         r_nach = requests.get(API_SBB_IST, params=params_nach, timeout=10)
         r_nach.raise_for_status()
         records_nach = r_nach.json().get("results", [])
 
-        # --- [4] Bern-Datensätze als Lookup-Dictionary aufbauen ---
-        # Schlüssel: fahrt_bezeichner → schneller Zugriff beim Zusammenführen
-        bern_lookup = {
+        if not records_nach:
+            st.warning(f"Keine passenden Züge nach '{nach}' gefunden.")
+            return pd.DataFrame()
+
+        # --- [4] Zielbahnhof-Lookup aufbauen ---
+        ziel_lookup = {
             r["fahrt_bezeichner"]: r
             for r in records_nach
             if r.get("fahrt_bezeichner")
         }
 
-        # --- [5] Verbindungen zusammenführen und Verspätung berechnen ---
+        # --- [5] Verbindungen zusammenführen + Richtung prüfen ---
         verbindungen = []
         for r in records_von:
             fid = r.get("fahrt_bezeichner")
-
-            # Nur Züge behalten, die auch in Bern halten
-            if fid not in bern_lookup:
+            if fid not in ziel_lookup:
                 continue
 
-            bern = bern_lookup[fid]
+            ziel = ziel_lookup[fid]
 
             abfahrt_geplant = r.get("abfahrtszeit", "")
-            abfahrt_ist     = r.get("ab_prognose", "")
-            ankunft_geplant = bern.get("ankunftszeit", "")
-            ankunft_ist     = bern.get("an_prognose", "")
+            ankunft_geplant = ziel.get("ankunftszeit", "")
 
-            # Zugname aus produkt_id + linien_text zusammensetzen → z. B. "IC5", "IR13"
-            produkt  = r.get("produkt_id", "")
-            linie    = r.get("linien_text", "")
-            zugname  = f"{produkt}{linie}".strip() if (produkt or linie) else "–"
+            # Richtungsprüfung: Abfahrt muss VOR Ankunft liegen
+            # Verhindert dass Züge Bern→Zürich ebenfalls erscheinen
+            if abfahrt_geplant and ankunft_geplant:
+                if abfahrt_geplant >= ankunft_geplant:
+                    continue
 
-            # Verspätung in Minuten (total_seconds() für korrekte Berechnung)
-            verspaetung = 0
-            if abfahrt_geplant and abfahrt_ist:
-                try:
-                    geplant_dt  = datetime.fromisoformat(abfahrt_geplant[:19])
-                    ist_dt      = datetime.fromisoformat(abfahrt_ist[:19])
-                    verspaetung = max(0, int((ist_dt - geplant_dt).total_seconds()) // 60)
-                except (ValueError, TypeError):
-                    verspaetung = 0
+            zugname        = r.get("linien_text", "–") or "–"
+            verspaetung_ab = parse_bool(r.get("abfahrtsverspatung", False))
+            verspaetung_an = parse_bool(ziel.get("ankunftsverspatung", False))
 
             verbindungen.append({
-                "Zug":               zugname,
-                "Abfahrt (geplant)": abfahrt_geplant[:16] if abfahrt_geplant else "–",
-                "Abfahrt (ist)":     abfahrt_ist[:16]     if abfahrt_ist     else "–",
-                "Ankunft (geplant)": ankunft_geplant[:16] if ankunft_geplant else "–",
-                "Ankunft (ist)":     ankunft_ist[:16]     if ankunft_ist     else "–",
-                "Verspätung (min)":  verspaetung,
-                "Ausgefallen":       "❌ Ja" if r.get("faellt_aus_tf") else "✅ Nein",
-                "Status":            "🔴 Verspätet" if verspaetung > 3 else "🟢 Pünktlich"
+                "Zug":                zugname,
+                "Abfahrt (geplant)":  abfahrt_geplant[:16] if abfahrt_geplant else "–",
+                "Ankunft (geplant)":  ankunft_geplant[:16] if ankunft_geplant else "–",
+                "Verspätung Abfahrt": "🔴 Ja" if verspaetung_ab else "🟢 Nein",
+                "Verspätung Ankunft": "🔴 Ja" if verspaetung_an else "🟢 Nein",
             })
 
             if len(verbindungen) >= anzahl:
@@ -137,14 +158,16 @@ def verbindungen_laden(von="Zürich HB", nach="Bern", anzahl=10):
 
 @st.cache_data(ttl=120)
 def abfahrten_laden(station="Zürich HB", anzahl=20):
-    """
-    Lädt aktuelle Abfahrten an einem Bahnhof aus den SBB IST-Daten.
-    Hier genügt eine einzige API-Abfrage, da nur ein Haltepunkt relevant ist.
-    """
     try:
-        # --- [6] Einfache Abfrage: alle Abfahrten am gewünschten Bahnhof ---
+        neuestes_datum = neuestes_datum_holen()
+
+        # Nur IC/IR für übersichtlicheres Abfahrtsbrett
         params = {
-            "where": f'haltestellen_name="{station}"',
+            "refine": [
+                f"haltestellen_name:{station}",
+                f"betriebstag:{neuestes_datum}",
+            ],
+            "where": 'verkehrsmittel_text in ("IC", "IR", "EC", "ICE", "RE")',
             "limit": anzahl,
             "order_by": "abfahrtszeit ASC",
         }
@@ -154,30 +177,14 @@ def abfahrten_laden(station="Zürich HB", anzahl=20):
 
         abfahrten = []
         for r in records:
-            abfahrt  = r.get("abfahrtszeit", "")
-            prognose = r.get("ab_prognose", "")
+            abfahrt     = r.get("abfahrtszeit", "")
+            zugname     = r.get("linien_text", "–") or "–"
+            verspaetung = parse_bool(r.get("abfahrtsverspatung", False))
 
-            # Zugname aus produkt_id + linien_text zusammensetzen → z. B. "IC5", "IR13"
-            produkt  = r.get("produkt_id", "")
-            linie    = r.get("linien_text", "")
-            zugname  = f"{produkt}{linie}".strip() if (produkt or linie) else "–"
-
-            verspaetung = 0
-            if abfahrt and prognose:
-                try:
-                    a_dt        = datetime.fromisoformat(abfahrt[:19])
-                    p_dt        = datetime.fromisoformat(prognose[:19])
-                    verspaetung = max(0, int((p_dt - a_dt).total_seconds()) // 60)
-                except (ValueError, TypeError):
-                    pass
-
-            # abfahrt[11:16] → schneidet "2025-04-08T14:32:00+02:00" auf "14:32"
             abfahrten.append({
-                "Zug":              zugname,
-                "Abfahrt":          abfahrt[11:16] if abfahrt else "–",
-                "Verspätung (min)": verspaetung,
-                "Ausgefallen":      "❌ Ja" if r.get("faellt_aus_tf") else "✅ Nein",
-                "Status":           "🔴 Verspätet" if verspaetung > 3 else "🟢 Pünktlich"
+                "Zug":       zugname,
+                "Abfahrt":   abfahrt[11:16] if abfahrt else "–",
+                "Verspätet": "🔴 Ja" if verspaetung else "🟢 Nein",
             })
 
         return pd.DataFrame(abfahrten)
@@ -185,11 +192,12 @@ def abfahrten_laden(station="Zürich HB", anzahl=20):
     except requests.exceptions.RequestException as e:
         st.warning(f"Fehler beim Laden der Abfahrten: {e}")
         return pd.DataFrame()
-    
 
-# ============================================================ # wird später gelöscht, da nur für code testen
+
+# ============================================================
 # TEST-AUFRUFE
 # ============================================================
+
 if __name__ == "__main__":
 
     print("\n--- TEST: verbindungen_laden ---")
@@ -206,13 +214,3 @@ if __name__ == "__main__":
     else:
         print(df_abfahrten.to_string(index=False))
 
-
-if __name__ == "__main__":
-
-    # --- Diagnose: ersten Record anzeigen um Feldnamen zu sehen ---
-    print("\n--- DIAGNOSE: Feldnamen prüfen ---")
-    r = requests.get(API_SBB_IST, params={"limit": 1}, timeout=10)
-    print(r.status_code)
-    record = r.json().get("results", [{}])[0]
-    for key, value in record.items():
-        print(f"  {key}: {value}")
