@@ -42,3 +42,8 @@ def stoerungen_laden_api():
         # Fallback: leere Liste mit Hinweis
         st.warning(f"API nicht erreichbar: {e}")
         return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung", "Typ", "Ende"])
+
+if __name__ == "__main__":
+    df = stoerungen_laden_api()
+[   print(df.head())
+ #Lantwin Task: 1. Code Problem fixen 2. Zugname separat in Tabelle auflisten lassen aus der Description
