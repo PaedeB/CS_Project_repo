@@ -52,7 +52,9 @@ def stoerungen_laden_api():
                 "Linien":       linien_extrahieren(item.get("description", ""))
             })
 
-        return pd.DataFrame(stoerungen)
+        df = pd.DataFrame(stoerungen)
+        df_ec = df[df["Linien"].str.contains("EC", na=False)]
+        return df_ec
 
     except Exception as e:
         st.warning(f"API nicht erreichbar: {e}")
