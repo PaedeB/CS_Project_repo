@@ -6,9 +6,24 @@
 import requests
 import pandas as pd
 import streamlit as st
+import re
 
 # API URL
 API_STOERUNGEN = "https://data.sbb.ch/api/explore/v2.1/catalog/datasets/rail-traffic-information/records"
+
+def linien_extrahieren(description):
+    """
+    Extrahiert Zuglinien aus der Beschreibung.
+    Beispiel: 'Lines IC1, IR15, RE33 are affected.' -> 'IC1, IR15, RE33'
+    """
+    if not description:
+        return ""
+    match = re.search(r'Lines?\s+([\w\d,\s]+?)\s+(are|is)\s+affected', description)
+    if match:
+        linien = match.group(1)
+        linien = linien.replace(" and ", ", ")
+        return linien.strip()
+    return ""
 
 @st.cache_data(ttl=300)  # 5 Minuten Cache
 def stoerungen_laden_api():
@@ -33,13 +48,12 @@ def stoerungen_laden_api():
                 "Störung":      item.get("title", ""),
                 "Beschreibung": item.get("description", ""),
                 "Typ":          item.get("type", ""),
-                "Ende":         item.get("enddatetime", "")
+                "Ende":         item.get("enddatetime", ""),
+                "Linien":       linien_extrahieren(item.get("description", ""))
             })
 
         return pd.DataFrame(stoerungen)
 
     except Exception as e:
-        # Fallback: leere Liste mit Hinweis
         st.warning(f"API nicht erreichbar: {e}")
-        return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung", "Typ", "Ende"])
- #Lantwin Task: 1. Code Problem fixen 2. Zugname separat in Tabelle auflisten lassen aus der Description
+        return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung", "Typ", "Ende", "Linien"])
