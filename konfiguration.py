@@ -51,7 +51,6 @@ STRECKE = {
 # ------------------------------------------------------------
 # WETTERBEZUG
 # Legt fest, für welchen Ort standardmässig Wetterdaten geladen werden.
-# 
 # ------------------------------------------------------------
 WETTER_STANDARD_ORT = "Bern"
 WETTER_LAT = ORTE[WETTER_STANDARD_ORT]["lat"]
@@ -78,7 +77,6 @@ API_WETTER_HIST = "https://archive-api.open-meteo.com/v1/archive"
 # zentrale Standardwerte für Datenabfragen 
 # ------------------------------------------------------------
 MAX_VERBINDUNGEN = 10 #Anzahl Verbindungen pro API-Abfrage
-
 
 # ------------------------------------------------------------
 # OPTIONALE CACHE-ZEITEN
