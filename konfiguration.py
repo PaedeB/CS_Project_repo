@@ -8,7 +8,7 @@
 # PROJEKT / ALLGEMEINE EINSTELLUNGEN
 # ------------------------------------------------------------
 PROJEKT_NAME = "SBB Reisezuverlässigkeits-Analyzer & Prediktor"
-STANDARD_STRECKE_NAME = "Zürich HB → Bern"
+STANDARD_STRECKE_NAME = "St.Gallen → Zürich HB "
 
 # ------------------------------------------------------------
 # ORTE / STATIONEN
@@ -18,41 +18,46 @@ STANDARD_STRECKE_NAME = "Zürich HB → Bern"
 # vor allem für die Wetterdaten 
 # ------------------------------------------------------------
 ORTE = {
+    "St. Gallen": {
+        "station_id": "8506302",
+        "lat": 47.4245,
+        "lon": 9.3696
+    },
+    "Winterthur": {
+        "station_id": "8506000",
+        "lat": 47.5003,
+        "lon": 8.7241
+    },
+    "Zürich Flughafen": {
+        "station_id": "8503016",
+        "lat": 47.4506,
+        "lon": 8.5610
+    },
     "Zürich HB": {
         "station_id": "8503000",
         "lat": 47.3782,
         "lon": 8.5402
-    },
-    "Olten": {
-        "station_id": "8500218",
-        "lat": 47.3506,
-        "lon": 7.9078
-    },
-    "Bern": {
-        "station_id": "8507000",
-        "lat": 46.9480,
-        "lon": 7.4474
     }
 }
 
 # ------------------------------------------------------------
 # STRECKE
 # Definiert die Standardstrecke der Analyse
-#  Zwischenhalte sind optional und können später erweitert werden.
+# Zwischenhalte sind optional und können später erweitert werden.
 # ------------------------------------------------------------
 STRECKE = {
-    "name": "Zürich HB → Bern",
-    "von": "Zürich HB",
-    "nach": "Bern",
-    "von_id": ORTE["Zürich HB"]["station_id"],
-    "nach_id": ORTE["Bern"]["station_id"],
-    "zwischenhalte": ["Olten"] #ergänzen??
+    "name": "St. Gallen → Zürich HB",
+    "von": "St. Gallen",
+    "nach": "Zürich HB",
+    "von_id": ORTE["St. Gallen"]["station_id"],
+    "nach_id": ORTE["Zürich HB"]["station_id"],
+    "zwischenhalte": ["Winterthur", "Zürich Flughafen"]
 }
 # ------------------------------------------------------------
 # WETTERBEZUG
 # Legt fest, für welchen Ort standardmässig Wetterdaten geladen werden.
 # ------------------------------------------------------------
-WETTER_STANDARD_ORT = "Bern"
+WETTER_STANDARD_ORT = "St. Gallen"
 WETTER_LAT = ORTE[WETTER_STANDARD_ORT]["lat"]
 WETTER_LON = ORTE[WETTER_STANDARD_ORT]["lon"]
 
