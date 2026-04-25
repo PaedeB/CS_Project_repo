@@ -37,7 +37,7 @@ def linien_extrahieren(description):
     return ""
 
 # Cache: Ergebnis wird 5 Minuten gespeichert um API-Aufrufe zu reduzieren
-@st.cache_data(ttl=300)
+#@st.cache_data(ttl=300)
 def stoerungen_laden_api():
     """
     Lädt aktuelle SBB-Störungsmeldungen via Open Data API.
@@ -49,7 +49,7 @@ def stoerungen_laden_api():
         # limit=100 → maximal 100 Störungen laden
         # order_by → neueste Störungen zuerst
         params = {
-            "limit": 100,
+            "limit": 100000,
             "order_by": "startdatetime desc"
         }
         
@@ -82,7 +82,8 @@ def stoerungen_laden_api():
         # Nur EC-Störungen behalten (Fokus auf EC St. Gallen - Zürich)
         # na=False verhindert Fehler bei leeren Linien-Feldern
         df_ec = df[df["Linien"].str.contains("EC", na=False)]
-        
+        df_ec = df_ec[df_ec["Beschreibung"].str.contains("Zürich", na=False)]
+
         return df_ec
 
     except Exception as e:
@@ -90,3 +91,5 @@ def stoerungen_laden_api():
         # So stürzt die App nicht ab sondern zeigt eine hilfreiche Meldung
         st.warning(f"API nicht erreichbar: {e}")
         return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung", "Typ", "Ende", "Linien"])
+    
+print(stoerungen_laden_api())

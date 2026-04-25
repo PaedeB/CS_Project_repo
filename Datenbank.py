@@ -5,80 +5,92 @@
 import streamlit as st
 import pandas as pd
 
+
 from API_Open_Meteo import get_historical #importierung der historischen Wetterdaten
 from API_SBB_IST import verbindungen_laden, abfahrten_laden #importierung der aktuellen Verbindungen
 from API_SBB_Störungsmeldung import stoerungen_laden_api #importierung der aktuellen Störungen
+from konfiguration import ORTE, STRECKE
 
+# ── 1. Daten laden ─────────────────────────────────────────
+#Einschränkung auf 10000 aufgrund der Datenmenge
+sbb = verbindungen_laden(von="St. Gallen", nach="Zürich HB", anzahl=10000)
+sbb = pd.concat([verbindungen_laden(von="Zürich HB", nach="St. Gallen", anzahl=10000), sbb])
 
-def init_db():
-    """
-    Initialisiert die SQLite Datenbank.
-    Erstellt zwei Tabellen:
-      - verspaetungen: Gespeicherte Verspätungsmessungen pro Fahrt
-      - stoerungen:    Gespeicherte Störungsmeldungen
-    """
-    conn = sqlite3.connect("sbb_data.db")
-    cursor = conn.cursor()
+abfrage_stardat = str(sbb["Abfahrt (geplant)"].min())[:10]
+abfrage_enddat = str(sbb["Abfahrt (geplant)"].max())[:10]
 
-    # Tabelle für Verspätungsdaten
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS verspaetungen (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            datum TEXT,
-            wochentag INTEGER,        -- 0=Montag, 6=Sonntag
-            stunde INTEGER,           -- Abfahrtsstunde (0-23)
-            verspaetung_min REAL,     -- Verspätung in Minuten
-            ist_verspaetet INTEGER,   -- 1 = ja (>3 min), 0 = nein
-            temperatur REAL,          -- °C
-            niederschlag REAL,        -- mm
-            schneefall REAL,          -- cm
-            windgeschwindigkeit REAL  -- km/h
-        )
-    """)
+wetter = get_historical(47.3782, 8.5403, abfrage_stardat, abfrage_enddat)
+#stoerungen = stoerungen_laden_api()
 
-    # Tabelle für Störungsmeldungen
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS stoerungen (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            datum TEXT,
-            titel TEXT,
-            beschreibung TEXT,
-            strecke TEXT
-        )
-    """)
+print(wetter)
+print(abfrage_stardat)
+print(abfrage_enddat)
 
-    conn.commit()
-    conn.close()
+# ── 2. Unique Key erstellen ─────────────────────────────────
+sbb["Unique Zug & Abfahrt"] = sbb["Zug"] + "_" + sbb["Abfahrt (geplant)"]
 
-def verspaetung_speichern(datum, wochentag, stunde, verspaetung_min,
-                          temperatur, niederschlag, schneefall, wind):
-    """Speichert einen Verspätungseintrag in der Datenbank."""
-    conn = sqlite3.connect("sbb_data.db")
-    cursor = conn.cursor()
-    ist_verspaetet = 1 if verspaetung_min > 3 else 0  # >3 Min gilt als verspätet
-    cursor.execute("""
-        INSERT INTO verspaetungen
-        (datum, wochentag, stunde, verspaetung_min, ist_verspaetet,
-         temperatur, niederschlag, schneefall, windgeschwindigkeit)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (datum, wochentag, stunde, verspaetung_min, ist_verspaetet,
-          temperatur, niederschlag, schneefall, wind))
-    conn.commit()
-    conn.close()
+# ── 3. Datum-Spalte aus Abfahrt extrahieren (für Merge) ────
+sbb["datum"] = pd.to_datetime(sbb["Abfahrt (geplant)"]).dt.date
+wetter["datum"] = pd.to_datetime(wetter["date"]).dt.date
 
-def daten_laden():
-    """Lädt alle gespeicherten Verspätungsdaten aus der Datenbank."""
-    conn = sqlite3.connect("sbb_data.db")
-    df = pd.read_sql("SELECT * FROM verspaetungen", conn)
-    conn.close()
-    return df
+# ── 4. Verspätung als 0/1 umwandeln (für ML) ───────────────
+sbb["verspätet"] = sbb["Verspätung Abfahrt"].apply(
+    lambda x: 1 if "Ja" in x else 0
+)
 
-def stoerungen_laden_db():
-    """Lädt alle gespeicherten Störungsmeldungen aus der Datenbank."""
-    conn = sqlite3.connect("sbb_data.db")
-    df = pd.read_sql("SELECT * FROM stoerungen ORDER BY datum DESC", conn)
-    conn.close()
-    return df
+# ── 5. Störung vorhanden? (für ML) ─────────────────────────
+#stoerungen["datum"] = pd.to_datetime(stoerungen["Datum"]).dt.date
+#stoerungen["stoerung_aktiv"] = 1
 
-#Testspace
-print(stoerungen_laden_api())
+# ── 6. Alles zusammenführen ─────────────────────────────────
+df = pd.merge(sbb, wetter, on="datum", how="left")
+#df = pd.merge(df, stoerungen[["datum", "stoerung_aktiv"]], on="datum", how="left")
+#df["stoerung_aktiv"] = df["stoerung_aktiv"].fillna(0).astype(int)
+
+# ── 7. Nur relevante Spalten behalten ──────────────────────
+df_ml = df[[
+    "Unique Zug & Abfahrt",   # Key
+    "datum",                   # Datum
+    "Zug",                     # Zuglinie
+    "temperature_2m_max",      # Temperatur
+    "precipitation_sum",       # Niederschlag
+    "snowfall_sum",            # Schneefall
+    "windspeed_10m_max",       # Wind
+    #"stoerung_aktiv",          # Störung ja/nein
+    "verspätet"                # ZIEL für ML (0=pünktlich, 1=verspätet)
+]]
+
+# ── Störungen: Pro Datum nur 1 Zeile (nicht mehrere) ───────
+#stoerungen["datum"] = pd.to_datetime(stoerungen["Datum"]).dt.date
+#stoerungen_grouped = stoerungen.groupby("datum")["stoerung_aktiv"].max().reset_index()
+
+# ── Merge mit deduplizierten Störungen ──────────────────────
+df = pd.merge(sbb, wetter, on="datum", how="left")
+#df = pd.merge(df, stoerungen_grouped, on="datum", how="left")
+#df["stoerung_aktiv"] = df["stoerung_aktiv"].fillna(0).astype(int)
+
+df = pd.merge(sbb, wetter, on="datum", how="left")
+#df = pd.merge(df, stoerungen_grouped, on="datum", how="left")
+#df["stoerung_aktiv"] = df["stoerung_aktiv"].fillna(0).astype(int)
+
+# Duplikate entfernen
+df = df.drop_duplicates(subset=["Unique Zug & Abfahrt"])
+
+# Nur EC-Züge behalten
+df_ml = df[df["Zug"] == "EC"].reset_index(drop=True)
+
+# Nur relevante Spalten für ML behalten
+df_ml = df_ml[[
+    "Unique Zug & Abfahrt",
+    "datum",
+    "Abfahrt (geplant)",
+    "temperature_2m_max",
+    "precipitation_sum",
+    "snowfall_sum",
+    "windspeed_10m_max",
+    #"stoerung_aktiv",
+    "verspätet"            # Ziel für ML
+]].reset_index(drop=True)
+
+print(df_ml)
+print(f"\nForm: {df_ml.shape}")  # (Zeilen, Spalten)

@@ -75,7 +75,7 @@ def verbindungen_laden(von="Zürich HB", nach="Bern", anzahl=10):
                 f"betriebstag:{neuestes_datum}",
             ],
             "where": 'verkehrsmittel_text in ("IC", "IR", "EC", "ICE", "RE")',
-            "limit": 100,
+            "limit": 10000,
             "order_by": "abfahrtszeit ASC",
         }
         r_von = requests.get(API_SBB_IST, params=params_von, timeout=10)
@@ -99,7 +99,7 @@ def verbindungen_laden(von="Zürich HB", nach="Bern", anzahl=10):
         params_nach = {
             "refine": f"betriebstag:{neuestes_datum}",
             "where": f'haltestellen_name="{nach}" AND fahrt_bezeichner in ({ids_filter})',
-            "limit": 100,
+            "limit": 10000,
         }
         r_nach = requests.get(API_SBB_IST, params=params_nach, timeout=10)
         r_nach.raise_for_status()
@@ -214,3 +214,4 @@ if __name__ == "__main__":
     else:
         print(df_abfahrten.to_string(index=False))
 
+print()
