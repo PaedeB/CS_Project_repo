@@ -1,7 +1,14 @@
 # ============================================================
-# DATENBANK SETUP
+# DATENBANK SETUPa
 # Speichert historische Abfragen lokal für ML-Training
 # ============================================================
+import streamlit as st
+import pandas as pd
+
+from API_Open_Meteo import get_historical #importierung der historischen Wetterdaten
+from API_SBB_IST import verbindungen_laden, abfahrten_laden #importierung der aktuellen Verbindungen
+from API_SBB_Störungsmeldung import stoerungen_laden_api #importierung der aktuellen Störungen
+
 
 def init_db():
     """
@@ -72,3 +79,6 @@ def stoerungen_laden_db():
     df = pd.read_sql("SELECT * FROM stoerungen ORDER BY datum DESC", conn)
     conn.close()
     return df
+
+#Testspace
+print(stoerungen_laden_api())
