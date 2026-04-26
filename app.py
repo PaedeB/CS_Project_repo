@@ -1,786 +1,930 @@
-import streamlit as st
+"""
+EC-Verspätungsprediktor — Streamlit-App
+=======================================
 
-st.write("Horray, we connected everything")
-st.write("Hello")
-st.write("Adriana")
-# ============================================================
-# 🚆 SBB Strecken-Zuverlässigkeits-Dashboard
-# Gruppenprojekt – Modul: Computer Science
-# ============================================================
-# Benötigte Installationen (einmalig im Terminal ausführen):
-#   pip install streamlit pandas plotly scikit-learn requests numpy
-#
-# App starten:
-#   streamlit run sbb_dashboard.py
-# ============================================================
-#
-# VERWENDETE APIs (alle kostenlos, kein API-Key nötig):
-#   1. transport.opendata.ch  → Echtzeit-Verbindungen & Verspätungen
-#   2. data.sbb.ch            → Aktuelle SBB Störungsmeldungen (RSS-Feed)
-#   3. open-meteo.com         → Wetterdaten (historisch & aktuell)
-#
-# ANALYSIERTE STRECKE: Bern ↔ Zürich HB
-# ============================================================
+Start:
+    streamlit run app.py
 
-import streamlit as st
-import pandas as pd
+Diese Datei enthält die komplette Weboberfläche für das bereits trainierte
+Modell aus ``ec_models.pkl``. Die App lädt keine SBB-/OpenTransport-Ist-Daten
+oder Fahrplandaten mehr von Bahn-Websites. Diese Abfrage war unzuverlässig und
+wurde deshalb entfernt.
+
+Was die App weiterhin live lädt:
+    • Wetterdaten von Open-Meteo, weil Temperatur, Niederschlag, Schnee, Wind
+      und Sichtweite Teil des trainierten Merkmalsvektors sind.
+    • Aktuelle SBB-Störungsmeldungen als Kontextanzeige. Sie fliessen nicht in
+      das Modell ein, weil im Training keine historischen Störungsmeldungen mit
+      gleicher Struktur verfügbar sind.
+
+Was lokal vorausgesetzt wird:
+    • ``ec_models.pkl`` muss vorhanden sein. Diese Datei wird vom Trainingsskript
+      ``ec_delay_predictor.py`` erzeugt.
+"""
+
+import io
+from datetime import date, datetime, time, timedelta
+
+import joblib
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
+import pandas as pd
 import requests
-import sqlite3
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
-import json
-import time
+import streamlit as st
+from sklearn.tree import plot_tree
 
-# ============================================================
-# KONFIGURATION
-# Zentrale Einstellungen – hier anpassen falls nötig
-# ============================================================
+matplotlib.use("Agg")  # Headless-Backend: Matplotlib braucht kein Display.
 
-# Analysierte Strecke (kann später angepasst werden)
-STRECKE = {
-    "name": "Bern → Zürich HB",
-    "von": "Bern",
-    "nach": "Zürich HB",
-    "von_id": "8507000",   # SBB Stations-ID Bern
-    "nach_id": "8503000",  # SBB Stations-ID Zürich HB
+# ─── SEITENKONFIGURATION ─────────────────────────────────────────────────────
+
+st.set_page_config(
+    page_title="EC-Verspätungsprediktor",
+    page_icon="🚆",
+    layout="centered",
+)
+
+# ─── KONSTANTEN ───────────────────────────────────────────────────────────────
+#
+# Diese Konstanten spiegeln die Trainingskonfiguration aus
+# ec_delay_predictor.py. Sie werden hier absichtlich dupliziert, damit die
+# Web-App auch ohne Import des Trainingsskripts lauffähig bleibt. Wichtig:
+# Merkmalsnamen bleiben Englisch, weil sie exakt zu den im Modell gespeicherten
+# Spaltennamen passen müssen.
+
+STOPS_ORDERED = ["Zürich HB", "Zürich Flughafen", "Winterthur", "St. Gallen"]
+STOP_TO_IDX = {s: i for i, s in enumerate(STOPS_ORDERED)}
+
+STOP_COORDS = {
+    "Zürich HB":         {"lat": 47.3779, "lon": 8.5403},
+    "Zürich Flughafen": {"lat": 47.4504, "lon": 8.5624},
+    "Winterthur":        {"lat": 47.4997, "lon": 8.7241},
+    "St. Gallen":        {"lat": 47.4241, "lon": 9.3763},
 }
 
-# API Endpoints
-API_TRANSPORT   = "https://transport.opendata.ch/v1"
-API_STOERUNGEN  = "https://www.sbb.ch/content/dam/internet/sbb/de/meta/footer/baustellen.xml"  # SBB Störungs-RSS
-API_WETTER      = "https://api.open-meteo.com/v1/forecast"
-API_WETTER_HIST = "https://archive-api.open-meteo.com/v1/archive"
+WEATHER_VARIABLES = [
+    "temperature_2m", "precipitation", "snowfall", "snow_depth",
+    "wind_speed_10m", "wind_gusts_10m", "visibility",
+    "cloud_cover", "relative_humidity_2m", "weather_code", "surface_pressure",
+]
 
-# Koordinaten Bern (für Wetter-API)
-BERN_LAT = 46.9480
-BERN_LON = 7.4474
+WMO_DESCRIPTIONS = {
+    0: "Klar", 1: "Überwiegend klar", 2: "Teilweise bewölkt", 3: "Bedeckt",
+    45: "Nebel", 48: "Raureifnebel",
+    51: "Leichter Nieselregen", 53: "Mässiger Nieselregen", 55: "Starker Nieselregen",
+    61: "Leichter Regen", 63: "Mässiger Regen", 65: "Starker Regen",
+    71: "Leichter Schneefall", 73: "Mässiger Schneefall", 75: "Starker Schneefall",
+    77: "Schneegriesel",
+    80: "Leichte Schauer", 81: "Mässige Schauer", 82: "Heftige Schauer",
+    85: "Leichte Schneeschauer", 86: "Starke Schneeschauer",
+    95: "Gewitter", 96: "Gewitter mit Hagel", 99: "Gewitter mit starkem Hagel",
+}
 
-# ============================================================
-# DATENBANK SETUP
-# Speichert historische Abfragen lokal für ML-Training
-# ============================================================
+WMO_ICONS = {
+    0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
+    45: "🌫️", 48: "🌫️",
+    51: "🌦️", 53: "🌦️", 55: "🌧️",
+    61: "🌧️", 63: "🌧️", 65: "🌧️",
+    71: "🌨️", 73: "🌨️", 75: "❄️", 77: "❄️",
+    80: "🌦️", 81: "🌧️", 82: "⛈️",
+    85: "🌨️", 86: "❄️",
+    95: "⛈️", 96: "⛈️", 99: "⛈️",
+}
 
-def init_db():
+
+# ─── MODELL LADEN ─────────────────────────────────────────────────────────────
+
+@st.cache_resource(show_spinner="Modelle werden geladen …")
+def load_models():
     """
-    Initialisiert die SQLite Datenbank.
-    Erstellt zwei Tabellen:
-      - verspaetungen: Gespeicherte Verspätungsmessungen pro Fahrt
-      - stoerungen:    Gespeicherte Störungsmeldungen
-    """
-    conn = sqlite3.connect("sbb_data.db")
-    cursor = conn.cursor()
+    Lädt die trainierten Modelle aus ``ec_models.pkl``.
 
-    # Tabelle für Verspätungsdaten
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS verspaetungen (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            datum TEXT,
-            wochentag INTEGER,        -- 0=Montag, 6=Sonntag
-            stunde INTEGER,           -- Abfahrtsstunde (0-23)
-            verspaetung_min REAL,     -- Verspätung in Minuten
-            ist_verspaetet INTEGER,   -- 1 = ja (>3 min), 0 = nein
-            temperatur REAL,          -- °C
-            niederschlag REAL,        -- mm
-            schneefall REAL,          -- cm
-            windgeschwindigkeit REAL  -- km/h
-        )
-    """)
+    Streamlit cached das Ergebnis als Resource, weil das Modell über mehrere
+    Interaktionen hinweg identisch bleibt und nicht bei jedem Klick neu von der
+    Festplatte geladen werden muss.
 
-    # Tabelle für Störungsmeldungen
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS stoerungen (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            datum TEXT,
-            titel TEXT,
-            beschreibung TEXT,
-            strecke TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-def verspaetung_speichern(datum, wochentag, stunde, verspaetung_min,
-                          temperatur, niederschlag, schneefall, wind):
-    """Speichert einen Verspätungseintrag in der Datenbank."""
-    conn = sqlite3.connect("sbb_data.db")
-    cursor = conn.cursor()
-    ist_verspaetet = 1 if verspaetung_min > 3 else 0  # >3 Min gilt als verspätet
-    cursor.execute("""
-        INSERT INTO verspaetungen
-        (datum, wochentag, stunde, verspaetung_min, ist_verspaetet,
-         temperatur, niederschlag, schneefall, windgeschwindigkeit)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (datum, wochentag, stunde, verspaetung_min, ist_verspaetet,
-          temperatur, niederschlag, schneefall, wind))
-    conn.commit()
-    conn.close()
-
-def daten_laden():
-    """Lädt alle gespeicherten Verspätungsdaten aus der Datenbank."""
-    conn = sqlite3.connect("sbb_data.db")
-    df = pd.read_sql("SELECT * FROM verspaetungen", conn)
-    conn.close()
-    return df
-
-def stoerungen_laden_db():
-    """Lädt alle gespeicherten Störungsmeldungen aus der Datenbank."""
-    conn = sqlite3.connect("sbb_data.db")
-    df = pd.read_sql("SELECT * FROM stoerungen ORDER BY datum DESC", conn)
-    conn.close()
-    return df
-
-# ============================================================
-# API: TRANSPORT.OPENDATA.CH
-# Lädt aktuelle Verbindungen und Verspätungen
-# ============================================================
-
-@st.cache_data(ttl=120)  # 2 Minuten Cache (Echtzeit-Daten)
-def verbindungen_laden(von, nach, anzahl=10):
-    """
-    Ruft aktuelle Zugverbindungen von transport.opendata.ch ab.
-    Gibt einen DataFrame mit Verbindungen inkl. Verspätungen zurück.
-
-    Dokumentation: https://transport.opendata.ch/docs.html
+    Rückgabe
+    --------
+    dict | None
+        Modellpaket mit Klassifikator, Regressor und Merkmalsliste, oder None,
+        wenn die Datei nicht vorhanden ist.
     """
     try:
-        params = {
-            "from": von,
-            "to": nach,
-            "limit": anzahl,
-            "fields[]": ["connections/from", "connections/to",
-                         "connections/duration", "connections/products"]
-        }
-        response = requests.get(f"{API_TRANSPORT}/connections", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        return joblib.load("ec_models.pkl")
+    except FileNotFoundError:
+        return None
 
-        verbindungen = []
-        for conn in data.get("connections", []):
-            abfahrt_geplant = conn["from"].get("departure", "")
-            abfahrt_ist     = conn["from"].get("prognosis", {}).get("departure", "")
-            ankunft_geplant = conn["to"].get("arrival", "")
-            ankunft_ist     = conn["to"].get("prognosis", {}).get("arrival", "")
 
-            # Verspätung berechnen (falls Echtzeit-Daten vorhanden)
-            verspaetung = 0
-            if abfahrt_geplant and abfahrt_ist:
-                try:
-                    geplant_dt = datetime.fromisoformat(abfahrt_geplant[:19])
-                    ist_dt     = datetime.fromisoformat(abfahrt_ist[:19])
-                    verspaetung = max(0, (ist_dt - geplant_dt).seconds // 60)
-                except:
-                    verspaetung = 0
+# ─── WETTERDATEN ──────────────────────────────────────────────────────────────
 
-            verbindungen.append({
-                "Abfahrt (geplant)": abfahrt_geplant[:16] if abfahrt_geplant else "–",
-                "Abfahrt (ist)":     abfahrt_ist[:16]     if abfahrt_ist     else "–",
-                "Ankunft (geplant)": ankunft_geplant[:16] if ankunft_geplant else "–",
-                "Verspätung (min)":  verspaetung,
-                "Status": "🔴 Verspätet" if verspaetung > 3 else "🟢 Pünktlich"
-            })
-
-        return pd.DataFrame(verbindungen)
-
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Verbindungsfehler zur Transport-API: {e}")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=120)
-def abfahrten_laden(station, anzahl=20):
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_weather(stop: str, target_date: date) -> dict | None:
     """
-    Lädt aktuelle Abfahrten an einem Bahnhof.
-    Nützlich für das Echtzeit-Dashboard.
+    Lädt stündliche Wetterdaten für eine Haltestelle und einen Tag.
+
+    Für vergangene Daten wird die Open-Meteo Archive API verwendet, für den
+    heutigen und zukünftige Tage die Forecast API. Beide Schnittstellen liefern
+    dieselben Variablennamen, sodass die restliche App nicht unterscheiden muss,
+    woher die Daten stammen.
+
+    Parameter
+    ---------
+    stop : str
+        Name der Haltestelle, muss in ``STOP_COORDS`` vorhanden sein.
+    target_date : date
+        Tag, für den die 24 Stundenwerte geladen werden.
+
+    Rückgabe
+    --------
+    dict | None
+        Wörterbuch ``{stunde: wetterwerte}``. Bei Netzwerkfehlern oder leerer
+        Antwort wird None zurückgegeben; die Merkmalserzeugung nutzt dann
+        sichere Standardwerte.
     """
+    coords = STOP_COORDS[stop]
+    today = date.today()
+    date_str = target_date.isoformat()
+
+    url = ("https://archive-api.open-meteo.com/v1/archive"
+           if target_date <= today else
+           "https://api.open-meteo.com/v1/forecast")
+
     try:
-        params = {"id": station, "limit": anzahl}
-        response = requests.get(f"{API_TRANSPORT}/stationboard", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        resp = requests.get(url, params={
+            "latitude":   coords["lat"],
+            "longitude":  coords["lon"],
+            "start_date": date_str,
+            "end_date":   date_str,
+            "hourly":     WEATHER_VARIABLES,
+            "timezone":   "Europe/Zurich",
+        }, timeout=20)
+        resp.raise_for_status()
+    except Exception as exc:
+        st.warning(f"Wetterdaten für {stop} konnten nicht geladen werden: {exc}")
+        return None
 
-        abfahrten = []
-        for journey in data.get("stationboard", []):
-            stop = journey.get("stop", {})
-            abfahrt    = stop.get("departure", "")
-            prognose   = stop.get("prognosis", {}).get("departure", "")
-            verspaetung = 0
-            if abfahrt and prognose:
-                try:
-                    a_dt = datetime.fromisoformat(abfahrt[:19])
-                    p_dt = datetime.fromisoformat(prognose[:19])
-                    verspaetung = max(0, (p_dt - a_dt).seconds // 60)
-                except:
-                    pass
+    hourly = resp.json().get("hourly", {})
+    if not hourly.get("time"):
+        return None
 
-            abfahrten.append({
-                "Zug":             journey.get("number", "–"),
-                "Richtung":        journey.get("to", "–"),
-                "Abfahrt":         abfahrt[11:16] if abfahrt else "–",
-                "Verspätung (min)": verspaetung,
-                "Status":          "🔴 Verspätet" if verspaetung > 3 else "🟢 Pünktlich"
-            })
+    result = {}
+    times = hourly.pop("time", [])
+    for i, ts in enumerate(times):
+        hour = datetime.fromisoformat(ts).hour
+        result[hour] = {k: (v[i] if v[i] is not None else 0) for k, v in hourly.items()}
+    return result
 
-        return pd.DataFrame(abfahrten)
 
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Fehler beim Laden der Abfahrten: {e}")
-        return pd.DataFrame()
-
-# ============================================================
-# API: SBB STÖRUNGSMELDUNGEN
-# Lädt aktuelle Störungen als RSS-Feed
-# ============================================================
-
-@st.cache_data(ttl=300)  # 5 Minuten Cache
-def stoerungen_laden_api():
+def weather_for_hour(weather_by_hour: dict | None, hour: int) -> dict:
     """
-    Lädt aktuelle SBB-Störungsmeldungen.
+    Gibt den Wetterdatensatz für eine Stunde zurück.
 
-    TODO für die Gruppe: Den korrekten RSS-Feed-Link der SBB einfügen.
-    Alternativ kann auch die offizielle SBB-Störungsseite gescrapt werden.
-    Überprüft auf: https://www.sbb.ch/de/kaufen/pages/fahrplan/aktuell.xhtml
+    Falls Open-Meteo keine exakt passende Stunde geliefert hat, wird die nächste
+    verfügbare Stunde verwendet. Ohne Wetterdaten wird ein leeres Wörterbuch
+    zurückgegeben; spätere Funktionen ersetzen fehlende Werte durch Defaults.
     """
-    try:
-        response = requests.get(API_STOERUNGEN, timeout=10)
-        response.raise_for_status()
-
-        # XML parsen
-        root = ET.fromstring(response.content)
-        stoerungen = []
-        for item in root.findall(".//item"):
-            titel = item.findtext("title", "")
-            beschr = item.findtext("description", "")
-            datum  = item.findtext("pubDate", "")
-            stoerungen.append({
-                "Datum":        datum,
-                "Störung":      titel,
-                "Beschreibung": beschr
-            })
-        return pd.DataFrame(stoerungen)
-
-    except Exception as e:
-        # Fallback: Leere Liste mit Hinweis
-        # (API-Link muss noch verifiziert werden)
-        return pd.DataFrame(columns=["Datum", "Störung", "Beschreibung"])
-
-# ============================================================
-# API: OPEN-METEO
-# Lädt Wetterdaten (historisch und aktuell)
-# ============================================================
-
-@st.cache_data(ttl=3600)  # 1 Stunde Cache
-def wetter_aktuell_laden():
-    """
-    Lädt aktuelle Wetterdaten für Bern.
-    Gibt Temperatur, Niederschlag, Schneefall und Wind zurück.
-    Dokumentation: https://open-meteo.com/en/docs
-    """
-    try:
-        params = {
-            "latitude":  BERN_LAT,
-            "longitude": BERN_LON,
-            "current":   "temperature_2m,precipitation,snowfall,wind_speed_10m",
-            "timezone":  "Europe/Zurich"
-        }
-        response = requests.get(API_WETTER, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("current", {})
-
-    except Exception as e:
-        st.warning(f"Wetter-API nicht erreichbar: {e}")
+    if not weather_by_hour:
         return {}
+    if hour in weather_by_hour:
+        return weather_by_hour[hour]
+    nearest = min(weather_by_hour.keys(), key=lambda h: abs(h - hour))
+    return weather_by_hour[nearest]
 
-@st.cache_data(ttl=86400)  # 24 Stunden Cache (historische Daten ändern sich nicht)
-def wetter_historisch_laden(start_datum, end_datum):
-    """
-    Lädt historische stündliche Wetterdaten.
-    start_datum / end_datum: Format "YYYY-MM-DD"
-    Nützlich für ML-Training.
-    """
-    try:
-        params = {
-            "latitude":   BERN_LAT,
-            "longitude":  BERN_LON,
-            "start_date": start_datum,
-            "end_date":   end_datum,
-            "hourly":     "temperature_2m,precipitation,snowfall,wind_speed_10m",
-            "timezone":   "Europe/Zurich"
-        }
-        response = requests.get(API_WETTER_HIST, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
 
-        # In DataFrame umwandeln
-        df = pd.DataFrame({
-            "Datum":             data["hourly"]["time"],
-            "Temperatur (°C)":   data["hourly"]["temperature_2m"],
-            "Niederschlag (mm)": data["hourly"]["precipitation"],
-            "Schneefall (cm)":   data["hourly"]["snowfall"],
-            "Wind (km/h)":       data["hourly"]["wind_speed_10m"]
+# ─── STÖRUNGEN AUS SBB OPEN DATA ─────────────────────────────────────────────
+
+SBB_DISRUPTIONS_URL = (
+    "https://data.sbb.ch/api/explore/v2.1/catalog/datasets"
+    "/rail-traffic-information/records"
+)
+
+# Die SBB/Opendatasoft-Antworten können je nach API-Version leicht andere
+# Feldnamen verwenden. Diese Kandidatenlisten halten die Auswertung robust.
+_DESC_KEYS = ("description", "title", "beschreibung", "meldungstext")
+_CAUSE_KEYS = ("cause", "ursache", "grund")
+_STATUS_KEYS = ("status",)
+_TYPE_KEYS = ("transporttype", "verkehrsart", "type")
+
+
+def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
+    """
+    Gibt den ersten vorhandenen Wert aus einer Liste möglicher Feldnamen zurück.
+
+    So kann dieselbe Logik mit deutschen und englischen SBB-Feldnamen umgehen,
+    ohne an einer kleinen Schemaänderung der API zu scheitern.
+    """
+    for key in keys:
+        value = item.get(key)
+        if value:
+            return str(value).strip()
+    return default
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_disruptions(dep_date: str) -> list[dict]:
+    """
+    Lädt aktuelle Fernverkehrs-Störungen aus SBB Open Data.
+
+    Die API liefert keine historischen Ist-Daten, sondern aktuelle bzw. aktive
+    Verkehrsinformationen. Diese Störungen sind ausdrücklich weiterhin Teil der
+    Website. ``dep_date`` wird genutzt, um Meldungen zu bevorzugen, die am
+    gewählten Datum aktiv sind.
+
+    Rückgabe
+    --------
+    list[dict]
+        Normalisierte Meldungen mit ``type``, ``severity`` und ``description``.
+        Bei API-Fehlern wird eine leere Liste zurückgegeben, damit die
+        Vorhersage weiterhin funktioniert.
+    """
+    day_start = f"{dep_date}T00:00:00"
+    day_end = f"{dep_date}T23:59:59"
+
+    results = []
+    for where_clause in [
+        (
+            "transporttype=\"Fernverkehr\""
+            f" AND starttime<=date\"{day_end}\""
+            f" AND (endtime>=date\"{day_start}\" OR endtime IS NULL)"
+        ),
+        "transporttype=\"Fernverkehr\"",
+        None,
+    ]:
+        try:
+            params: dict = {"limit": 100, "order_by": "starttime desc"}
+            if where_clause:
+                params["where"] = where_clause
+
+            resp = requests.get(SBB_DISRUPTIONS_URL, params=params, timeout=12)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            break
+        except Exception:
+            results = []
+
+    output = []
+    for item in results:
+        description = _pick(item, _DESC_KEYS)
+        cause = _pick(item, _CAUSE_KEYS).lower()
+        desc_lower = description.lower()
+        status = _pick(item, _STATUS_KEYS).lower()
+
+        transport = _pick(item, _TYPE_KEYS).lower()
+        if transport and "fern" not in transport and "zug" not in transport \
+                and "rail" not in transport and "train" not in transport:
+            continue
+
+        if any(k in cause or k in desc_lower
+               for k in ("bau", "construction", "works",
+                         "gleisarbeiten", "unterhaltsarbeiten", "baustelle")):
+            dtype = "construction"
+        elif any(k in cause or k in desc_lower
+                 for k in ("signal", "strom", "power", "stellwerk", "weiche")):
+            dtype = "signal_fault"
+        elif any(k in cause or k in desc_lower
+                 for k in ("wetter", "weather", "schnee", "snow", "wind", "sturm")):
+            dtype = "weather_event"
+        else:
+            dtype = "other"
+
+        if any(k in status or k in desc_lower
+               for k in ("ausfall", "cancelled", "cancel", "totalausfall", "fällt aus")):
+            severity = 3
+        elif any(k in desc_lower for k in ("verspätung", "delay", "störung", "unterbruch")):
+            severity = 2
+        else:
+            severity = 1
+
+        output.append({
+            "type": dtype,
+            "severity": severity,
+            "description": description or "(keine Beschreibung)",
         })
-        df["Datum"] = pd.to_datetime(df["Datum"])
-        return df
 
-    except Exception as e:
-        st.warning(f"Historische Wetterdaten nicht ladbar: {e}")
-        return pd.DataFrame()
+    return output
 
-# ============================================================
-# MASCHINELLES LERNEN
-# Random Forest Classifier für Verspätungsrisiko
-# ============================================================
 
-def trainings_daten_generieren(n=500):
+# ─── FEATURE-AUFBAU ───────────────────────────────────────────────────────────
+
+def _wv(w: dict, key: str, default=np.nan):
     """
-    Generiert synthetische Trainingsdaten bis echte historische
-    Daten aus der Datenbank verfügbar sind.
+    Liest einen Wetterwert mit Fallback aus einem Wörterbuch.
 
-    WICHTIG: Diese Funktion durch echte Daten ersetzen sobald
-    genug Datenpunkte in der DB gesammelt wurden (ca. 2-3 Wochen)!
-
-    Muster (basierend auf bekannten SBB-Mustern):
-    - Rushhour (7-9h, 17-19h) → mehr Verspätungen
-    - Schneefall > 2cm        → hohes Risiko
-    - Temperatur < 0°C        → erhöhtes Risiko
-    - Wochenende              → weniger Verspätungen
+    Open-Meteo kann einzelne Werte als None liefern. Für das Modell müssen aber
+    alle Merkmalsspalten numerisch befüllt sein; deshalb ersetzt diese Funktion
+    fehlende Einträge durch den übergebenen Standardwert.
     """
-    np.random.seed(42)
-    n_samples = n
+    v = w.get(key)
+    return v if v is not None else default
 
-    wochentag   = np.random.randint(0, 7, n_samples)
-    stunde      = np.random.randint(5, 23, n_samples)
-    temperatur  = np.random.uniform(-10, 35, n_samples)
-    niederschlag = np.random.uniform(0, 20, n_samples)
-    schneefall  = np.random.uniform(0, 15, n_samples)
-    wind        = np.random.uniform(0, 80, n_samples)
 
-    # Risiko-Logik für synthetische Labels
-    risiko = []
-    for i in range(n_samples):
-        score = 0
-        # Rushhour
-        if stunde[i] in [7, 8, 9, 17, 18, 19]:    score += 2
-        # Schnee
-        if schneefall[i] > 5:                       score += 3
-        elif schneefall[i] > 2:                     score += 1
-        # Kälte
-        if temperatur[i] < -5:                      score += 2
-        elif temperatur[i] < 0:                     score += 1
-        # Starker Wind
-        if wind[i] > 60:                            score += 2
-        elif wind[i] > 40:                          score += 1
-        # Starker Regen
-        if niederschlag[i] > 10:                    score += 1
-        # Wochenende (weniger Betrieb → weniger Verspätungen)
-        if wochentag[i] in [5, 6]:                  score -= 1
-
-        if score <= 1:   risiko.append(0)   # Niedrig
-        elif score <= 3: risiko.append(1)   # Mittel
-        else:            risiko.append(2)   # Hoch
-
-    df = pd.DataFrame({
-        "wochentag":        wochentag,
-        "stunde":           stunde,
-        "temperatur":       temperatur,
-        "niederschlag":     niederschlag,
-        "schneefall":       schneefall,
-        "windgeschwindigkeit": wind,
-        "risiko":           risiko
-    })
-    return df
-
-@st.cache_resource  # Modell wird nur einmal trainiert und gecacht
-def ml_modell_trainieren():
+def weather_record(w: dict, prefix: str) -> dict:
     """
-    Trainiert den Random Forest Classifier.
-    Versucht zuerst echte Daten aus der DB zu laden.
-    Falls zu wenig Daten vorhanden, werden synthetische verwendet.
-    Gibt das trainierte Modell und die Feature-Namen zurück.
+    Wandelt Open-Meteo-Werte in Modellmerkmale um.
+
+    ``prefix`` ist entweder ``orig`` für den Ursprungsbahnhof oder ``dest`` für
+    den Zielbahnhof. So entstehen Spalten wie ``orig_temp`` und ``dest_temp``.
     """
-    # Echte Daten versuchen zu laden
-    echte_daten = daten_laden()
+    return {
+        f"{prefix}_temp":         _wv(w, "temperature_2m"),
+        f"{prefix}_precip":       _wv(w, "precipitation",     0),
+        f"{prefix}_snow":         _wv(w, "snowfall",          0),
+        f"{prefix}_snow_depth":   _wv(w, "snow_depth",        0),
+        f"{prefix}_wind":         _wv(w, "wind_speed_10m"),
+        f"{prefix}_gusts":        _wv(w, "wind_gusts_10m"),
+        f"{prefix}_visibility":   _wv(w, "visibility",    10000),
+        f"{prefix}_cloud":        _wv(w, "cloud_cover"),
+        f"{prefix}_humidity":     _wv(w, "relative_humidity_2m"),
+        f"{prefix}_pressure":     _wv(w, "surface_pressure"),
+        f"{prefix}_weather_code": _wv(w, "weather_code",      0),
+    }
 
-    if len(echte_daten) >= 100:
-        # Genug echte Daten vorhanden!
-        df = echte_daten.copy()
-        # Risiko-Label aus Verspätungsminuten ableiten
-        df["risiko"] = df["verspaetung_min"].apply(
-            lambda x: 0 if x <= 3 else (1 if x <= 10 else 2)
-        )
-    else:
-        # Fallback: Synthetische Daten
-        df = trainings_daten_generieren(500)
 
-    # Features definieren (was das Modell als Input bekommt)
-    features = ["wochentag", "stunde", "temperatur",
-                "niederschlag", "schneefall", "windgeschwindigkeit"]
+def build_features(origin: str, destination: str, dep_dt: datetime,
+                   w_orig: dict, w_dest: dict,
+                   feature_cols: list[str]) -> pd.DataFrame:
+    """
+    Baut den vollständigen Merkmalsvektor für eine einzelne Vorhersage.
 
-    X = df[features]
-    y = df["risiko"]
+    Aus Route, Abfahrtszeit und Wetter entsteht genau eine DataFrame-Zeile. Die
+    Spalten werden am Ende in dieselbe Reihenfolge gebracht, die beim Training
+    gespeichert wurde. Fehlende Spalten werden mit 0 ergänzt, damit ältere
+    Modellpakete mit den früheren Störungsmerkmalen weiterhin robust laden.
+    """
+    orig_idx = STOP_TO_IDX[origin]
+    dest_idx = STOP_TO_IDX[destination]
+    direction = 0 if orig_idx < dest_idx else 1
 
-    # Modell trainieren
-    modell = RandomForestClassifier(
-        n_estimators=100,    # 100 Entscheidungsbäume
-        max_depth=8,         # Tiefe begrenzen (verhindert Overfitting)
-        random_state=42
+    month        = dep_dt.month
+    dep_hour     = dep_dt.hour
+    day_of_week  = dep_dt.weekday()
+    week_of_year = dep_dt.isocalendar().week
+
+    record = {
+        "direction":             direction,
+        "origin_stop_idx":       orig_idx,
+        "destination_stop_idx":  dest_idx,
+        "segment_length":        abs(dest_idx - orig_idx),
+        "dep_hour":     dep_hour,
+        "day_of_week":  day_of_week,
+        "month":        month,
+        "week_of_year": week_of_year,
+        "is_weekend":   int(day_of_week >= 5),
+        "is_rush_hour": int(7 <= dep_hour <= 9 or 16 <= dep_hour <= 19),
+        "season":       (month % 12) // 3,
+        **weather_record(w_orig, "orig"),
+        **weather_record(w_dest, "dest"),
+    }
+
+    # Abgeleitete Merkmale: gleiche Berechnungen wie im Trainingsskript.
+    record["bad_weather_score"] = (
+          (min(record["orig_snow"],   5)     / 5)      * 1.5
+        + (min(record["orig_precip"], 15)    / 15)     * 1.0
+        + (min(record["orig_gusts"] or 0, 100) / 100)  * 0.8
+        + ((10_000 - min(record["orig_visibility"] or 10000, 10000)) / 10_000) * 0.7
     )
-    modell.fit(X, y)
+    record["extreme_cold"]   = int((record["orig_temp"] or 0) < -5)
+    record["extreme_heat"]   = int((record["orig_temp"] or 0) > 33)
+    record["any_snow"]       = int((record["orig_snow"] or 0) > 0)
+    record["heavy_rain"]     = int((record["orig_precip"] or 0) > 8)
+    record["low_visibility"] = int((record["orig_visibility"] or 10000) < 1000)
+    record["precip_diff"]    = abs((record["dest_precip"] or 0) - (record["orig_precip"] or 0))
+    record["temp_diff"]      = abs((record["dest_temp"] or 0)   - (record["orig_temp"] or 0))
+    record["wind_diff"]      = abs((record["dest_wind"] or 0)   - (record["orig_wind"] or 0))
 
-    return modell, features
+    row = pd.DataFrame([record])
+    for col in feature_cols:
+        if col not in row.columns:
+            row[col] = 0
+    return row[feature_cols].fillna(0)
 
-def risiko_vorhersagen(modell, features, wochentag, stunde,
-                       temperatur, niederschlag, schneefall, wind):
+
+# ─── UI-HILFSFUNKTIONEN ──────────────────────────────────────────────────────
+
+def route_diagram(origin: str, destination: str) -> str:
     """
-    Sagt das Verspätungsrisiko für gegebene Bedingungen voraus.
-    Gibt zurück: Risikolevel (0/1/2), Label, Wahrscheinlichkeiten,
-                 und Feature Importances.
+    Erzeugt eine kompakte Markdown-Darstellung der gewählten Strecke.
+
+    Der Start wird grün, das Ziel rot markiert. Haltestellen, die nicht auf dem
+    aktuell gewählten Segment liegen, werden durchgestrichen. Die Funktion gibt
+    nur Text zurück; Streamlit rendert ihn später mit ``st.markdown``.
     """
-    # Input als DataFrame (Modell erwartet dieses Format)
-    X = pd.DataFrame([[wochentag, stunde, temperatur,
-                        niederschlag, schneefall, wind]],
-                     columns=features)
+    orig_idx = STOP_TO_IDX[origin]
+    dest_idx = STOP_TO_IDX[destination]
+    forward = orig_idx < dest_idx
+    ordered = STOPS_ORDERED if forward else list(reversed(STOPS_ORDERED))
+    min_i = min(orig_idx, dest_idx)
+    max_i = max(orig_idx, dest_idx)
+    on_route = {s for s, i in STOP_TO_IDX.items() if min_i <= i <= max_i}
 
-    # Vorhersage
-    risiko_num    = modell.predict(X)[0]
-    wahrscheinl   = modell.predict_proba(X)[0]
+    parts = []
+    for stop in ordered:
+        if stop == origin:
+            parts.append(f"**🟢 {stop}**")
+        elif stop == destination:
+            parts.append(f"**🔴 {stop}**")
+        elif stop in on_route:
+            parts.append(f"⚪ {stop}")
+        else:
+            parts.append(f"〇 ~~{stop}~~")
 
-    # Feature Importance (welche Faktoren sind am wichtigsten?)
-    importances = dict(zip(features, modell.feature_importances_))
+    arrow = " → " if forward else " ← "
+    return arrow.join(parts)
 
-    # Numerisches Label in Text umwandeln
-    labels = {0: "🟢 Niedrig", 1: "🟡 Mittel", 2: "🔴 Hoch"}
-    return risiko_num, labels[risiko_num], wahrscheinl, importances
 
-# ============================================================
-# HILFSFUNKTIONEN
-# ============================================================
+def weather_icon(code: int | None) -> str:
+    """Gibt ein Wettersymbol zum WMO-Wettercode zurück."""
+    return WMO_ICONS.get(int(code) if code else 0, "🌡️")
 
-def wochentag_name(nr):
-    """Wandelt Wochentag-Nummer in deutschen Namen um."""
-    namen = ["Montag", "Dienstag", "Mittwoch", "Donnerstag",
-             "Freitag", "Samstag", "Sonntag"]
-    return namen[nr]
 
-def risiko_farbe(risiko_label):
-    """Gibt die passende Farbe für ein Risikolevel zurück."""
-    if "Niedrig" in risiko_label: return "success"
-    if "Mittel"  in risiko_label: return "warning"
-    return "error"
+def weather_description(code: int | None) -> str:
+    """Gibt eine deutschsprachige Beschreibung zum WMO-Wettercode zurück."""
+    return WMO_DESCRIPTIONS.get(int(code) if code else 0, "Unbekannt")
 
-# ============================================================
-# STREAMLIT APP – HAUPTSTRUKTUR
-# ============================================================
+
+# ─── VISUALISIERUNGEN ────────────────────────────────────────────────────────
+
+def _fig_to_img(fig) -> bytes:
+    """
+    Rendert eine Matplotlib-Figur als PNG-Bytefolge.
+
+    Streamlit kann diese Bytes direkt mit ``st.image`` anzeigen. Nach dem
+    Speichern wird die Figur geschlossen, damit bei wiederholten Interaktionen
+    keine Matplotlib-Objekte im Speicher hängen bleiben.
+    """
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def plot_feature_importances(clf, feature_cols: list[str]) -> bytes:
+    """
+    Visualisiert die 15 wichtigsten Eingabemerkmale des Klassifikators.
+
+    Die Werte stammen aus der Gini-Wichtigkeit des Random Forest. Hohe Balken
+    bedeuten, dass das Merkmal häufig und wirkungsvoll für Baum-Splits genutzt
+    wurde.
+    """
+    imp = pd.Series(clf.feature_importances_, index=feature_cols).nlargest(15)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    colors = ["#e84040" if imp[f] > imp.median() else "#5b9cf6" for f in imp.index]
+    ax.barh(imp.index[::-1], imp.values[::-1], color=colors[::-1])
+    ax.set_xlabel("Wichtigkeit (Gini)", fontsize=9)
+    ax.set_title("Top 15 Merkmalswichtigkeiten (Random-Forest-Klassifikator)", fontsize=10)
+    ax.tick_params(axis="y", labelsize=8)
+    ax.tick_params(axis="x", labelsize=8)
+    fig.tight_layout()
+    return _fig_to_img(fig)
+
+
+def plot_delay_by_hour(clf, reg, feature_cols: list[str],
+                       origin: str, destination: str) -> bytes:
+    """
+    Zeigt den modellierten Einfluss der Abfahrtsstunde.
+
+    Die Funktion erzeugt künstliche Eingaben für alle Stunden von 0 bis 23 und
+    hält Route, Wochentag und Wetter konstant. So wird sichtbar, wie sich die
+    Vorhersage allein durch die Tageszeit verändert.
+    """
+    base = {col: 0 for col in feature_cols}
+    orig_idx = STOP_TO_IDX[origin]
+    dest_idx = STOP_TO_IDX[destination]
+    base.update({
+        "direction":             0 if orig_idx < dest_idx else 1,
+        "origin_stop_idx":       orig_idx,
+        "destination_stop_idx":  dest_idx,
+        "segment_length":        abs(dest_idx - orig_idx),
+        "month":                 6,
+        "day_of_week":           2,
+        "week_of_year":          24,
+        "is_weekend":            0,
+        "season":                2,
+        # Typische Schönwetterwerte als konstante Vergleichsbasis.
+        "orig_temp":         10.0,  "dest_temp":         10.0,
+        "orig_wind":         15.0,  "dest_wind":         15.0,
+        "orig_gusts":        25.0,  "dest_gusts":        25.0,
+        "orig_visibility": 9000.0,  "dest_visibility": 9000.0,
+        "orig_cloud":        40.0,  "dest_cloud":        40.0,
+        "orig_humidity":     60.0,  "dest_humidity":     60.0,
+        "orig_pressure":    1013.0, "dest_pressure":    1013.0,
+        "bad_weather_score": 0.04,
+    })
+
+    hours = list(range(24))
+    probs, mins_ = [], []
+    for h in hours:
+        row = {**base, "dep_hour": h,
+               "is_rush_hour": int(7 <= h <= 9 or 16 <= h <= 19)}
+        X = pd.DataFrame([row])[feature_cols].fillna(0)
+        probs.append(clf.predict_proba(X)[0][1])
+        mins_.append(max(0, float(reg.predict(X)[0])))
+
+    fig, ax1 = plt.subplots(figsize=(8, 3.8))
+    ax2 = ax1.twinx()
+
+    ax1.plot(hours, [p * 100 for p in probs], color="#e84040",
+             linewidth=2.2, marker="o", markersize=4, label="Verspätungswahrscheinlichkeit (%)")
+    ax1.set_ylabel("Verspätungswahrscheinlichkeit (%)", color="#e84040", fontsize=9)
+    ax1.tick_params(axis="y", labelcolor="#e84040", labelsize=8)
+    ax1.set_ylim(0, 100)
+
+    ax2.plot(hours, mins_, color="#5b9cf6",
+             linewidth=2.2, marker="s", markersize=4, linestyle="--",
+             label="Erwartete Verspätung (min)")
+    ax2.set_ylabel("Erwartete Verspätung (min)", color="#5b9cf6", fontsize=9)
+    ax2.tick_params(axis="y", labelcolor="#5b9cf6", labelsize=8)
+    ax2.set_ylim(0, max(mins_) * 1.4 + 1)
+
+    ax1.set_xlabel("Abfahrtsstunde", fontsize=9)
+    ax1.set_xticks(hours)
+    ax1.tick_params(axis="x", labelsize=7)
+    ax1.set_title(
+        f"Vorhersage nach Abfahrtsstunde\n"
+        f"{origin} → {destination}  (Schönwetter, Wochentag)",
+        fontsize=10,
+    )
+
+    # Beide Achsen haben eigene Linien; hier werden die Legenden zusammengeführt.
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc="upper left")
+
+    fig.tight_layout()
+    return _fig_to_img(fig)
+
+
+def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
+                          origin: str, destination: str) -> bytes:
+    """
+    Zeigt den modellierten Einfluss des Schlechtwetter-Scores.
+
+    Der Score wird von 0 bis 4 variiert. Aus jedem Score werden plausible
+    Wetterwerte für Schnee, Regen, Windböen und Sichtweite abgeleitet.
+    """
+    base = {col: 0 for col in feature_cols}
+    orig_idx = STOP_TO_IDX[origin]
+    dest_idx = STOP_TO_IDX[destination]
+    base.update({
+        "direction":             0 if orig_idx < dest_idx else 1,
+        "origin_stop_idx":       orig_idx,
+        "destination_stop_idx":  dest_idx,
+        "segment_length":        abs(dest_idx - orig_idx),
+        "dep_hour":              8,
+        "month":                 1,
+        "day_of_week":           1,
+        "week_of_year":          3,
+        "is_weekend":            0,
+        "is_rush_hour":          1,
+        "season":                3,
+        "orig_temp":             2.0, "dest_temp":             2.0,
+        "orig_visibility":    5000.0, "dest_visibility":    5000.0,
+        "orig_cloud":           80.0, "dest_cloud":           80.0,
+        "orig_humidity":        85.0, "dest_humidity":        85.0,
+        "orig_pressure":      1005.0, "dest_pressure":      1005.0,
+    })
+
+    scores = np.linspace(0, 4, 50)
+    probs, mins_ = [], []
+    for s in scores:
+        # Score grob auf physische Werte zurückprojizieren:
+        # score ≈ snow*1.5 + precip*1.0 + gusts*0.8 + visibility_loss*0.7
+        snow = min(s / 1.5, 5.0)
+        precip = min(s / 1.0, 15.0)
+        gusts = min(s / 0.8, 100.0)
+        vis = max(10000 - s * 0.7 * 10000, 100)
+        row = {
+            **base,
+            "bad_weather_score": s,
+            "orig_snow":          snow,  "dest_snow":          snow,
+            "orig_precip":        precip, "dest_precip":       precip,
+            "orig_gusts":         gusts, "dest_gusts":         gusts,
+            "orig_wind":          gusts * 0.7, "dest_wind":    gusts * 0.7,
+            "orig_visibility":    vis,   "dest_visibility":   vis,
+            "any_snow":           int(snow > 0),
+            "heavy_rain":         int(precip > 8),
+            "low_visibility":     int(vis < 1000),
+            "precip_diff":        0.0,
+            "temp_diff":          0.0,
+            "wind_diff":          0.0,
+        }
+        X = pd.DataFrame([row])[feature_cols].fillna(0)
+        probs.append(clf.predict_proba(X)[0][1])
+        mins_.append(max(0, float(reg.predict(X)[0])))
+
+    fig, ax1 = plt.subplots(figsize=(8, 3.8))
+    ax2 = ax1.twinx()
+
+    ax1.plot(scores, [p * 100 for p in probs], color="#e84040",
+             linewidth=2.2, label="Verspätungswahrscheinlichkeit (%)")
+    ax1.set_ylabel("Verspätungswahrscheinlichkeit (%)", color="#e84040", fontsize=9)
+    ax1.tick_params(axis="y", labelcolor="#e84040", labelsize=8)
+    ax1.set_ylim(0, 100)
+
+    ax2.plot(scores, mins_, color="#5b9cf6",
+             linewidth=2.2, linestyle="--", label="Erwartete Verspätung (min)")
+    ax2.set_ylabel("Erwartete Verspätung (min)", color="#5b9cf6", fontsize=9)
+    ax2.tick_params(axis="y", labelcolor="#5b9cf6", labelsize=8)
+    ax2.set_ylim(0, max(mins_) * 1.4 + 1)
+
+    ax1.set_xlabel("Schlechtwetter-Score  (0 = ruhig · 4 = Schnee und Sturm)", fontsize=9)
+    ax1.set_title(
+        f"Vorhersage nach Wetterbelastung\n"
+        f"{origin} → {destination}  (Morgenverkehr, Januar)",
+        fontsize=10,
+    )
+
+    # Dezente Bereiche helfen, milde, mittlere und starke Wetterlagen zu lesen.
+    ax1.axvspan(0,   1.0, alpha=0.06, color="green",  label="Mild")
+    ax1.axvspan(1.0, 2.5, alpha=0.06, color="orange", label="Mittel")
+    ax1.axvspan(2.5, 4.0, alpha=0.06, color="red",    label="Stark")
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=7, loc="upper left")
+
+    fig.tight_layout()
+    return _fig_to_img(fig)
+
+
+def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
+    """
+    Visualisiert einen einzelnen Entscheidungsbaum aus dem Random Forest.
+
+    Ein kompletter Baum wäre sehr gross. Deshalb werden nur die ersten drei
+    Ebenen gezeigt, damit die wichtigsten frühen Entscheidungen lesbar bleiben.
+    """
+    estimator = clf.estimators_[0]
+    fig, ax = plt.subplots(figsize=(18, 6))
+    plot_tree(
+        estimator,
+        feature_names=feature_cols,
+        class_names=["Pünktlich", "Verspätet"],
+        filled=True,
+        rounded=True,
+        max_depth=3,          # Nur die oberen drei Ebenen zeigen.
+        fontsize=7,
+        ax=ax,
+        impurity=False,
+        proportion=True,
+    )
+    ax.set_title(
+        "Ein Entscheidungsbaum aus dem Random Forest (erste 3 Ebenen)\n"
+        "Jeder Knoten zeigt: Split-Bedingung · Klassenanteile · Mehrheitsklasse",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    return _fig_to_img(fig)
+
+
+# ─── HAUPT-APP ────────────────────────────────────────────────────────────────
 
 def main():
-    st.set_page_config(
-        page_title="🚆 SBB Zuverlässigkeits-Dashboard",
-        page_icon="🚆",
-        layout="wide"
-    )
+    """
+    Rendert die komplette Streamlit-Oberfläche und führt Vorhersagen aus.
 
-    # Datenbank beim Start initialisieren
-    init_db()
+    Ablauf:
+      1. Modellpaket laden.
+      2. Route, Datum und Abfahrtszeit aus der UI lesen.
+      3. Wetter für Abfahrt und approximierte Ankunft laden.
+      4. Klassifikator und Regressor ausführen.
+      5. Aktuelle SBB-Störungen als Kontext laden und anzeigen.
+      6. Ergebnis, Wetterwerte und Modellvisualisierungen anzeigen.
+    """
+    st.title("🚆 EC-Verspätungsprediktor")
+    st.caption("Korridor Zürich HB ↔ St. Gallen · Modell + Open-Meteo-Wetterdaten")
 
-    # Titel mit Streckeninfo
-    st.title("🚆 SBB Strecken-Zuverlässigkeit")
-    st.caption(f"Analyse der Strecke **{STRECKE['name']}** – Keine offizielle SBB-App.")
-
-    # ---- NAVIGATION ----
-    st.sidebar.title("Navigation")
-    seite = st.sidebar.radio("Seite wählen:", [
-        "📡 Live-Dashboard",
-        "📊 Historische Analyse",
-        "🤖 Störungsprediktor",
-        "ℹ️ Über diese App"
-    ])
-
-    # Aktuelles Wetter immer in Sidebar anzeigen
-    st.sidebar.divider()
-    st.sidebar.subheader("🌤️ Aktuelles Wetter (Bern)")
-    wetter = wetter_aktuell_laden()
-    if wetter:
-        st.sidebar.metric("Temperatur",  f"{wetter.get('temperature_2m', '–')} °C")
-        st.sidebar.metric("Niederschlag", f"{wetter.get('precipitation', '–')} mm")
-        st.sidebar.metric("Schneefall",  f"{wetter.get('snowfall', '–')} cm")
-        st.sidebar.metric("Wind",        f"{wetter.get('wind_speed_10m', '–')} km/h")
-
-    # ============================================================
-    # SEITE 1: LIVE-DASHBOARD
-    # Zeigt Echtzeit-Verbindungen und aktuelle Störungen
-    # ============================================================
-    if seite == "📡 Live-Dashboard":
-        st.header("📡 Live-Dashboard")
-        st.write(f"Aktuelle Verbindungen und Störungen auf der Strecke **{STRECKE['name']}**.")
-
-        # Zwei Spalten: Verbindungen links, Störungen rechts
-        col1, col2 = st.columns([3, 2])
-
-        with col1:
-            st.subheader("🚆 Nächste Verbindungen")
-            with st.spinner("Lade Echtzeit-Daten..."):
-                verbindungen = verbindungen_laden(STRECKE["von"], STRECKE["nach"])
-
-            if not verbindungen.empty:
-                # Verspätete Zeilen rot einfärben
-                st.dataframe(
-                    verbindungen,
-                    use_container_width=True,
-                    hide_index=True
-                )
-                # Pünktlichkeitsquote berechnen
-                puenktlich = (verbindungen["Verspätung (min)"] <= 3).sum()
-                total      = len(verbindungen)
-                st.metric("Pünktlichkeit (aktuell)",
-                          f"{puenktlich}/{total} Züge",
-                          f"{(puenktlich/total*100):.0f}%")
-            else:
-                st.info("Keine Echtzeit-Daten verfügbar.")
-
-        with col2:
-            st.subheader("⚠️ Aktuelle Störungen")
-            stoerungen = stoerungen_laden_api()
-            if not stoerungen.empty:
-                for _, row in stoerungen.iterrows():
-                    st.warning(f"**{row['Störung']}**\n\n{row['Beschreibung']}")
-            else:
-                st.success("✅ Keine aktuellen Störungen gemeldet.")
-
-        # Aktueller Daten-Refresh Button
-        if st.button("🔄 Daten aktualisieren"):
-            st.cache_data.clear()
-            st.rerun()
-
-    # ============================================================
-    # SEITE 2: HISTORISCHE ANALYSE
-    # Zeigt gespeicherte Verspätungsdaten und Wetterzusammenhänge
-    # ============================================================
-    elif seite == "📊 Historische Analyse":
-        st.header("📊 Historische Zuverlässigkeit")
-        st.write("Analyse gespeicherter Verspätungsdaten und deren Zusammenhang mit Wetter.")
-
-        df = daten_laden()
-
-        if df.empty:
-            st.info("""
-            📋 **Noch keine historischen Daten vorhanden.**
-
-            Die App sammelt automatisch Daten, wenn du das Live-Dashboard verwendest.
-            Nach einigen Tagen erscheinen hier die Auswertungen.
-
-            *Tipp für die Gruppe: Ihr könnt auch historische SBB-Daten von
-            [opentransportdata.swiss](https://opentransportdata.swiss) herunterladen
-            und importieren, um sofort Daten zu haben.*
-            """)
-        else:
-            # Kennzahlen
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Erfasste Fahrten",   len(df))
-            m2.metric("Ø Verspätung",        f"{df['verspaetung_min'].mean():.1f} min")
-            m3.metric("Pünktlichkeitsquote", f"{(df['ist_verspaetet']==0).mean()*100:.1f}%")
-
-            # Verspätungen nach Stunde
-            st.subheader("Verspätungen nach Tageszeit")
-            stunden_df = df.groupby("stunde")["verspaetung_min"].mean().reset_index()
-            fig1 = px.bar(stunden_df, x="stunde", y="verspaetung_min",
-                         labels={"stunde": "Stunde", "verspaetung_min": "Ø Verspätung (min)"},
-                         color="verspaetung_min", color_continuous_scale="RdYlGn_r",
-                         template="plotly_dark")
-            st.plotly_chart(fig1, use_container_width=True)
-
-            # Verspätungen nach Wochentag
-            st.subheader("Verspätungen nach Wochentag")
-            wt_df = df.groupby("wochentag")["verspaetung_min"].mean().reset_index()
-            wt_df["Tag"] = wt_df["wochentag"].apply(wochentag_name)
-            fig2 = px.bar(wt_df, x="Tag", y="verspaetung_min",
-                         labels={"verspaetung_min": "Ø Verspätung (min)"},
-                         template="plotly_dark")
-            st.plotly_chart(fig2, use_container_width=True)
-
-            # Zusammenhang Schneefall / Verspätung
-            if "schneefall" in df.columns:
-                st.subheader("Wetterzusammenhang: Schneefall & Verspätung")
-                fig3 = px.scatter(df, x="schneefall", y="verspaetung_min",
-                                 color="ist_verspaetet",
-                                 labels={"schneefall": "Schneefall (cm)",
-                                         "verspaetung_min": "Verspätung (min)"},
-                                 template="plotly_dark",
-                                 color_discrete_map={0: "#4CAF50", 1: "#F44336"})
-                st.plotly_chart(fig3, use_container_width=True)
-
-        # Historische Wetterdaten laden (letzter Monat)
-        st.subheader("🌦️ Historisches Wetter (letzter Monat)")
-        heute     = datetime.now()
-        vor_monat = heute - timedelta(days=30)
-        wetter_hist = wetter_historisch_laden(
-            vor_monat.strftime("%Y-%m-%d"),
-            heute.strftime("%Y-%m-%d")
+    # ── Modelle laden ─────────────────────────────────────────────────────────
+    models = load_models()
+    if models is None:
+        st.error("**Kein trainiertes Modell gefunden.**")
+        st.info(
+            "Trainieren Sie zuerst das Modell:\n\n"
+            "```bash\n"
+            "python ec_delay_predictor.py --start 2026-01-01 --end 2026-01-31\n"
+            "```\n\n"
+            "Die benötigten Ist-Daten müssen lokal im Ordner `istdaten_cache/` liegen."
         )
-        if not wetter_hist.empty:
-            fig4 = go.Figure()
-            fig4.add_trace(go.Scatter(
-                x=wetter_hist["Datum"],
-                y=wetter_hist["Temperatur (°C)"],
-                name="Temperatur (°C)",
-                line=dict(color="#2196F3")
-            ))
-            fig4.add_trace(go.Bar(
-                x=wetter_hist["Datum"],
-                y=wetter_hist["Schneefall (cm)"],
-                name="Schneefall (cm)",
-                marker_color="#90CAF9",
-                yaxis="y2"
-            ))
-            fig4.update_layout(
-                title="Temperatur & Schneefall – letzter Monat",
-                yaxis2=dict(overlaying="y", side="right"),
-                template="plotly_dark"
+        return
+
+    clf = models["clf"]
+    reg = models["reg"]
+    feature_cols = models["feature_cols"]
+    threshold = models.get("threshold", 3)
+
+    # ── Routenauswahl ─────────────────────────────────────────────────────────
+    st.subheader("Route")
+    col_from, col_arrow, col_to = st.columns([5, 1, 5])
+
+    with col_from:
+        origin = st.selectbox("Von", STOPS_ORDERED, index=0, key="origin")
+
+    with col_arrow:
+        st.markdown(
+            "<div style='padding-top:1.9rem; text-align:center; font-size:1.4rem'>→</div>",
+            unsafe_allow_html=True,
+        )
+
+    with col_to:
+        dest_options = [s for s in STOPS_ORDERED if s != origin]
+        default_dest = "St. Gallen" if origin != "St. Gallen" else "Zürich HB"
+        dest_idx_in_opts = dest_options.index(default_dest) if default_dest in dest_options else 0
+        destination = st.selectbox("Nach", dest_options,
+                                   index=dest_idx_in_opts, key="destination")
+
+    orig_idx = STOP_TO_IDX[origin]
+    dest_idx = STOP_TO_IDX[destination]
+    direction_lbl = "Zürich → St. Gallen" if orig_idx < dest_idx else "St. Gallen → Zürich"
+    st.caption(f"Richtung: {direction_lbl} · Segment: {abs(dest_idx - orig_idx)} Halt(e)")
+    st.markdown(route_diagram(origin, destination))
+
+    # ── Datum und Uhrzeit ─────────────────────────────────────────────────────
+    st.subheader("Abfahrt")
+    col_date, col_time = st.columns(2)
+
+    with col_date:
+        dep_date = st.date_input(
+            "Datum",
+            value=date.today(),
+            min_value=date.today() - timedelta(days=365),
+            max_value=date.today() + timedelta(days=14),
+        )
+
+    with col_time:
+        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 7), step=60)
+
+    dep_dt = datetime.combine(dep_date, dep_time_input)
+
+    # ── Vorhersage-Button ─────────────────────────────────────────────────────
+    st.divider()
+    predict_clicked = st.button("🔮 Verspätung vorhersagen", type="primary", use_container_width=True)
+
+    if not predict_clicked:
+        st.info("Wählen Sie Route und Abfahrtszeit und klicken Sie dann auf **Verspätung vorhersagen**.")
+
+        # Modellgrafiken bereits vor der ersten Vorhersage anzeigen.
+        _render_model_insights(clf, reg, feature_cols, origin, destination)
+        return
+
+    # ── Wetter laden ──────────────────────────────────────────────────────────
+    arr_dt = dep_dt + timedelta(hours=1, minutes=6)
+
+    with st.spinner("Wetterdaten werden geladen …"):
+        orig_weather_all = fetch_weather(origin, dep_date)
+        dest_weather_all = fetch_weather(destination, arr_dt.date())
+
+    w_orig = weather_for_hour(orig_weather_all, dep_dt.hour)
+    w_dest = weather_for_hour(dest_weather_all, arr_dt.hour)
+
+    # ── Vorhersage berechnen ──────────────────────────────────────────────────
+    X = build_features(origin, destination, dep_dt, w_orig, w_dest, feature_cols)
+
+    delay_prob = clf.predict_proba(X)[0][1]
+    delay_class = clf.predict(X)[0]
+    delay_mins = float(reg.predict(X)[0])
+
+    # ── SBB-Störungen laden ───────────────────────────────────────────────────
+    with st.spinner("SBB-Störungen werden geprüft …"):
+        disruptions = fetch_disruptions(dep_date.isoformat())
+
+    # ── Ergebnis anzeigen ─────────────────────────────────────────────────────
+    st.subheader("Vorhersage")
+
+    if delay_class:
+        if delay_mins >= 10:
+            verdict_color = "🔴"
+            verdict_text = "Deutliche Verspätung erwartet"
+        else:
+            verdict_color = "🟠"
+            verdict_text = "Leichte Verspätung wahrscheinlich"
+    else:
+        verdict_color = "🟢"
+        verdict_text = "Voraussichtlich pünktlich"
+
+    st.markdown(
+        f"<div style='border-radius:8px; padding:16px 20px; background:#1e1e2e;"
+        f"font-size:1.25rem; font-weight:600'>"
+        f"{verdict_color} &nbsp; {verdict_text}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Verspätungsrisiko", f"{delay_prob:.0%}")
+    m2.metric("Erwartete Verspätung", f"{max(0, delay_mins):.1f} min")
+    m3.metric("SBB-Schwelle", f"≥ {threshold} min = verspätet")
+
+    # ── Wetterkarten ──────────────────────────────────────────────────────────
+    st.subheader("Wetterbedingungen")
+    w_col1, w_col2 = st.columns(2)
+
+    def weather_card(col, stop: str, w: dict, label: str):
+        """
+        Rendert eine kompakte Wetterkarte für Abfahrt oder Ankunft.
+
+        Die Karte zeigt nur die Modell-relevanten Hauptwerte. Fehlende Werte
+        werden als Gedankenstrich angezeigt, damit die UI bei leeren
+        Wetterantworten stabil bleibt.
+        """
+        wcode = int(w.get("weather_code") or 0)
+        icon = weather_icon(wcode)
+        desc = weather_description(wcode)
+        with col:
+            st.markdown(f"**{icon} {label} — {stop}**")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Temp.",
+                      f"{w.get('temperature_2m', '—'):.1f} °C"
+                      if w.get("temperature_2m") is not None else "—")
+            c2.metric("Regen", f"{w.get('precipitation', 0):.1f} mm")
+            c3.metric("Schnee", f"{w.get('snowfall', 0):.1f} cm")
+            c4, c5, c6 = st.columns(3)
+            c4.metric("Wind",
+                      f"{w.get('wind_speed_10m', '—'):.0f} km/h"
+                      if w.get("wind_speed_10m") is not None else "—")
+            c5.metric("Böen",
+                      f"{w.get('wind_gusts_10m', '—'):.0f} km/h"
+                      if w.get("wind_gusts_10m") is not None else "—")
+            c6.metric("Zustand", desc[:18])
+
+    weather_card(w_col1, origin, w_orig, "Abfahrt")
+    weather_card(w_col2, destination, w_dest, "Ankunft")
+
+    # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
+    if disruptions:
+        st.subheader("⚠️ Aktive SBB-Störungen")
+        severity_labels = ["Info", "Leicht", "Erheblich", "Ausfall"]
+        type_labels = {
+            "construction": "Baustelle / Gleisarbeiten",
+            "signal_fault": "Signal- oder Stellwerksstörung",
+            "weather_event": "Wetterbedingte Störung",
+            "other": "Sonstige Störung",
+        }
+        for disruption in disruptions:
+            severity = severity_labels[min(disruption["severity"], 3)]
+            dtype = type_labels.get(disruption["type"], "Sonstige Störung")
+            st.warning(
+                f"**{dtype}** · {severity}\n\n"
+                + (disruption.get("description") or "")
             )
-            st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.success("Keine aktiven Fernverkehrs-Störungen für dieses Datum gefunden.")
 
-    # ============================================================
-    # SEITE 3: STÖRUNGSPREDIKTOR
-    # ML-Modell sagt Verspätungsrisiko für geplante Reise voraus
-    # ============================================================
-    elif seite == "🤖 Störungsprediktor":
-        st.header("🤖 Störungsprediktor")
-        st.write(f"Wie hoch ist das Verspätungsrisiko auf der Strecke **{STRECKE['name']}** für deine Reise?")
-        st.warning("⚠️ Diese Vorhersage basiert auf statistischen Mustern und ist keine Garantie.")
-
-        # Modell laden
-        with st.spinner("Lade ML-Modell..."):
-            modell, features = ml_modell_trainieren()
-
-        # Benutzereingabe
-        st.subheader("🗓️ Reise planen")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            wochentag_input = st.selectbox(
-                "Reisetag:",
-                options=list(range(7)),
-                format_func=wochentag_name
-            )
-            stunde_input = st.slider("Abfahrtszeit:", 5, 23, 8,
-                                     format="%d:00 Uhr")
-
-        with col2:
-            # Aktuelles Wetter als Standardwerte
-            temp_default  = wetter.get("temperature_2m", 10)  if wetter else 10
-            wind_default  = wetter.get("wind_speed_10m", 15)  if wetter else 15
-            schnee_default = wetter.get("snowfall", 0)         if wetter else 0
-            regen_default  = wetter.get("precipitation", 0)   if wetter else 0
-
-            temp_input   = st.number_input("Temperatur (°C):",  -20.0, 40.0, float(temp_default),  0.5)
-            schnee_input = st.number_input("Schneefall (cm):",    0.0, 50.0, float(schnee_default), 0.5)
-            regen_input  = st.number_input("Niederschlag (mm):",  0.0, 50.0, float(regen_default),  0.5)
-            wind_input   = st.number_input("Wind (km/h):",         0.0, 120.0, float(wind_default),  1.0)
-
-        if st.button("🔍 Risiko berechnen", type="primary"):
-            risiko_num, risiko_label, wahrscheinl, importances = risiko_vorhersagen(
-                modell, features,
-                wochentag_input, stunde_input,
-                temp_input, regen_input, schnee_input, wind_input
-            )
-
-            # Ergebnis anzeigen
-            st.divider()
-            st.subheader("Ergebnis")
-
-            # Grosses Risikolevel
-            farbe = risiko_farbe(risiko_label)
-            if farbe == "success": st.success(f"## {risiko_label}")
-            elif farbe == "warning": st.warning(f"## {risiko_label}")
-            else: st.error(f"## {risiko_label}")
-
-            # Wahrscheinlichkeiten als Balkendiagramm
-            col_a, col_b = st.columns(2)
-            with col_a:
-                labels_text = ["🟢 Niedrig", "🟡 Mittel", "🔴 Hoch"]
-                fig_prob = go.Figure(go.Bar(
-                    x=labels_text,
-                    y=[w * 100 for w in wahrscheinl],
-                    marker_color=["#4CAF50", "#FF9800", "#F44336"]
-                ))
-                fig_prob.update_layout(
-                    title="Wahrscheinlichkeiten (%)",
-                    yaxis_title="%",
-                    template="plotly_dark"
-                )
-                st.plotly_chart(fig_prob, use_container_width=True)
-
-            with col_b:
-                # Feature Importance
-                imp_df = pd.DataFrame({
-                    "Faktor": list(importances.keys()),
-                    "Wichtigkeit": list(importances.values())
-                }).sort_values("Wichtigkeit", ascending=True)
-
-                fig_imp = go.Figure(go.Bar(
-                    x=imp_df["Wichtigkeit"],
-                    y=imp_df["Faktor"],
-                    orientation="h",
-                    marker_color="#2196F3"
-                ))
-                fig_imp.update_layout(
-                    title="Wichtigste Einflussfaktoren",
-                    template="plotly_dark"
-                )
-                st.plotly_chart(fig_imp, use_container_width=True)
-
-    # ============================================================
-    # SEITE 4: ÜBER DIESE APP
-    # ============================================================
-    elif seite == "ℹ️ Über diese App":
-        st.header("ℹ️ Über diese App")
-
-        st.markdown(f"""
-        ### 🚆 SBB Strecken-Zuverlässigkeits-Dashboard
-
-        **Problem:** Reisende erfahren SBB-Störungen meist erst, wenn sie bereits passiert sind.
-        Es gibt keine öffentliche Möglichkeit, proaktiv zu prüfen, wie zuverlässig eine Strecke
-        historisch war.
-
-        **Unsere Lösung:** Eine Anwendung, die SBB-Echtzeitdaten, historische Verspätungsstatistiken
-        und Wetterdaten kombiniert, um Pendlern eine datenbasierte Antwort zu geben:
-        *"Wie zuverlässig ist meine Strecke heute?"*
-
-        ---
-
-        ### 📡 Verwendete Datenquellen
-        | Quelle | Daten | Link |
-        |---|---|---|
-        | transport.opendata.ch | Echtzeit-Verbindungen & Verspätungen | https://transport.opendata.ch |
-        | SBB Open Data | Störungsmeldungen | https://data.sbb.ch |
-        | Open-Meteo | Wetterdaten (historisch & live) | https://open-meteo.com |
-
-        ---
-
-        ### 🤖 ML-Modell
-        - **Algorithmus:** Random Forest Classifier
-        - **Features:** Wochentag, Uhrzeit, Temperatur, Niederschlag, Schneefall, Wind
-        - **Output:** Risikolevel (Niedrig / Mittel / Hoch)
-
-        ---
-
-        ### 👥 Contribution-Matrix
-        | Person | Aufgabe |
-        |---|---|
-        | Person 1 | TODO |
-        | Person 2 | TODO |
-        | Person 3 | TODO |
-        | Person 4 | TODO |
-        | Person 5 | TODO |
-        """)
+    # ── Modelleinblicke ───────────────────────────────────────────────────────
+    _render_model_insights(clf, reg, feature_cols, origin, destination)
 
 
-# ============================================================
-# APP STARTEN
-# ============================================================
+# ─── MODELLEINBLICKE ─────────────────────────────────────────────────────────
+
+def _render_model_insights(clf, reg, feature_cols: list[str],
+                           origin: str, destination: str) -> None:
+    """
+    Rendert die erklärenden Modellgrafiken.
+
+    Die Expander zeigen:
+      1. Wichtigste Merkmale des Klassifikators.
+      2. Vorhersageverlauf nach Abfahrtsstunde.
+      3. Vorhersageverlauf nach Wetterbelastung.
+      4. Einen beispielhaften Entscheidungsbaum aus dem Random Forest.
+    """
+    st.divider()
+    st.subheader("📊 Modelleinblicke")
+
+    with st.expander("Merkmalswichtigkeiten", expanded=False):
+        st.caption(
+            "Diese Balken zeigen, welche Eingaben der Klassifikator im Mittel "
+            "am stärksten nutzt."
+        )
+        st.image(plot_feature_importances(clf, feature_cols), use_container_width=True)
+
+    with st.expander("Verspätung nach Abfahrtsstunde", expanded=False):
+        st.caption(
+            "Rot zeigt die Verspätungswahrscheinlichkeit, blau die erwarteten "
+            "Minuten. Route und Wetter bleiben in dieser Analyse konstant."
+        )
+        st.image(
+            plot_delay_by_hour(clf, reg, feature_cols, origin, destination),
+            use_container_width=True,
+        )
+
+    with st.expander("Verspätung nach Wetterbelastung", expanded=False):
+        st.caption(
+            "Der Schlechtwetter-Score wird von ruhigen Bedingungen bis zu "
+            "starker Winterbelastung variiert."
+        )
+        st.image(
+            plot_delay_vs_weather(clf, reg, feature_cols, origin, destination),
+            use_container_width=True,
+        )
+
+    with st.expander("Entscheidungsbaum (erste 3 Ebenen)", expanded=False):
+        st.caption(
+            "Ein Baum aus dem Random Forest, auf drei Ebenen gekürzt. Blau "
+            "steht für pünktlich, Orange für verspätet."
+        )
+        st.image(plot_single_tree(clf, feature_cols), use_container_width=True)
+
+
 if __name__ == "__main__":
     main()
