@@ -692,7 +692,7 @@ def main():
       5. Aktuelle SBB-Störungen als Kontext laden und anzeigen.
       6. Ergebnis, Wetterwerte und Modellvisualisierungen anzeigen.
     """
-    st.title("🚆 EC-Verspätungsprediktor")
+    st.title("🚆 EC-Verspätungsprädiktor")
     st.caption("Korridor Zürich HB ↔ St. Gallen · Modell + Open-Meteo-Wetterdaten")
 
     # ── Modelle laden ─────────────────────────────────────────────────────────
