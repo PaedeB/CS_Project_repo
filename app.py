@@ -875,7 +875,7 @@ def main():
     with st.expander((f"**{icon_dest} Abfahrt — {origin}**"), expanded=False):
         weather_card(w_orig)
     
-    with st.expander(st.markdown(f"**{icon_orig} Abfahrt — {destination}**"), expanded = False):
+    with st.expander((f"**{icon_orig} Abfahrt — {destination}**"), expanded = False):
         weather_card(w_dest)
 
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
