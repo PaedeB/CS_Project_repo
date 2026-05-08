@@ -770,6 +770,7 @@ def main():
         return
 
     # ── Wetter laden ──────────────────────────────────────────────────────────
+    st.divider()
     arr_dt = dep_dt + timedelta(hours=1, minutes=6)
 
     with st.spinner("Wetterdaten werden geladen …"):
