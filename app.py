@@ -833,7 +833,9 @@ def main():
 
     # ── Wetterkarten ──────────────────────────────────────────────────────────
     st.subheader("Wetterbedingungen")
-    w_col1 = st.columns(1)
+    w_col1 = st.columns(1)[0]
+    w_col2 = st.columns(1)[0]
+
 
     def weather_card(col, stop: str, w: dict, label: str):
         """
@@ -846,26 +848,26 @@ def main():
         wcode = int(w.get("weather_code") or 0)
         icon = weather_icon(wcode)
         desc = weather_description(wcode)
-        with col:
-            st.markdown(f"**{icon} {label} — {stop}**")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Temp.",
-                      f"{w.get('temperature_2m', '—'):.1f} °C"
-                      if w.get("temperature_2m") is not None else "—")
-            c2.metric("Regen", f"{w.get('precipitation', 0):.1f} mm")
-            c3.metric("Schnee", f"{w.get('snowfall', 0):.1f} cm")
-            c4, c5, c6 = st.columns(3)
-            c4.metric("Wind",
-                      f"{w.get('wind_speed_10m', '—'):.0f} km/h"
-                      if w.get("wind_speed_10m") is not None else "—")
-            c5.metric("Böen",
-                      f"{w.get('wind_gusts_10m', '—'):.0f} km/h"
-                      if w.get("wind_gusts_10m") is not None else "—")
-            c6.metric("Zustand", desc[:18])
+        
+        #with col:
+        st.markdown(f"**{icon} {label} — {stop}**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Temp.",
+        f"{w.get('temperature_2m', '—'):.1f} °C"
+            if w.get("temperature_2m") is not None else "—")
+        c2.metric("Regen", f"{w.get('precipitation', 0):.1f} mm")
+        c3.metric("Schnee", f"{w.get('snowfall', 0):.1f} cm")
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Wind",
+            f"{w.get('wind_speed_10m', '—'):.0f} km/h"
+            if w.get("wind_speed_10m") is not None else "—")
+        c5.metric("Böen",
+            f"{w.get('wind_gusts_10m', '—'):.0f} km/h"
+            if w.get("wind_gusts_10m") is not None else "—")
+        c6.metric("Zustand", desc[:18])
 
     weather_card(w_col1, origin, w_orig, "Abfahrt")
-    w_col2 = st.columns(1)
-
+    
     weather_card(w_col2, destination, w_dest, "Ankunft")
 
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
