@@ -803,7 +803,7 @@ def main():
         verdict_text = "Voraussichtlich pünktlich"
 
     st.markdown(
-        f"<div style='border-radius:8px; padding:16px 20px; background:#1e1e2e;"
+        f"<div style='border-radius:8px; padding:16px 20px; background:#f0f2f6;"
         f"font-size:1.25rem; font-weight:600'>"
         f"{verdict_color} &nbsp; {verdict_text}"
         f"</div>",
