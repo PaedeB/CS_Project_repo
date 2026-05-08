@@ -778,7 +778,6 @@ def main():
         dest_weather_all = fetch_weather(destination, arr_dt.date())
 
     w_orig = weather_for_hour(orig_weather_all, dep_dt.hour)
-    st.divider()
     w_dest = weather_for_hour(dest_weather_all, arr_dt.hour)
 
     # ── Vorhersage berechnen ──────────────────────────────────────────────────
@@ -834,7 +833,7 @@ def main():
 
     # ── Wetterkarten ──────────────────────────────────────────────────────────
     st.subheader("Wetterbedingungen")
-    w_col1, w_col2 = st.columns(2)
+    w_col1 = st.columns(1)
 
     def weather_card(col, stop: str, w: dict, label: str):
         """
@@ -865,6 +864,8 @@ def main():
             c6.metric("Zustand", desc[:18])
 
     weather_card(w_col1, origin, w_orig, "Abfahrt")
+    w_col2 = st.columns(1)
+
     weather_card(w_col2, destination, w_dest, "Ankunft")
 
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
