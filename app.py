@@ -869,10 +869,13 @@ def main():
             if w.get("wind_gusts_10m") is not None else "—")
         c6.metric("Zustand", desc[:18])
     
-    with st.expander(st.markdown(f"**{weather_icon(w_orig)} Abfahrt — {origin}**"), expanded=False):
+    icon_dest = weather_icon(int(w_dest.get("weather_code") or 0))
+    icon_orig = weather_icon(int(w_orig.get("weather_code") or 0))
+
+    with st.expander(st.markdown(f"**{icon_dest} Abfahrt — {origin}**"), expanded=False):
         weather_card(w_orig)
     
-    with st.expander(st.markdown(f"**{weather_icon(w_dest)} Abfahrt — {destination}**"), expanded = False):
+    with st.expander(st.markdown(f"**{icon_orig} Abfahrt — {destination}**"), expanded = False):
         weather_card(w_dest)
 
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
