@@ -847,7 +847,6 @@ def main():
         Wetterantworten stabil bleibt.
         """
         wcode = int(w.get("weather_code") or 0)
-        icon = weather_icon(wcode)
         desc = weather_description(wcode)
         
         #with col:
@@ -902,6 +901,113 @@ def main():
     _render_model_insights(clf, reg, feature_cols, origin, destination)
 
 
+# --- Plot für die Uhrzeitentwicklung ---------
+def plot_regression_by_hour(reg, feature_cols: list[str],
+                            origin: str, destination: str) -> bytes:
+    """
+    Zeigt die vom Regressor erwartete Verspätung je Abfahrtsstunde.
+
+    Für jede Stunde von 00 bis 23 wird eine künstliche Eingabe erzeugt.
+    Wetter und Route bleiben konstant, damit nur der Einfluss der Uhrzeit
+    sichtbar wird.
+    """
+
+    base = {col: 0 for col in feature_cols}
+
+    orig_idx = STOP_TO_IDX[origin]
+    dest_idx = STOP_TO_IDX[destination]
+
+    base.update({
+        "direction":             0 if orig_idx < dest_idx else 1,
+        "origin_stop_idx":       orig_idx,
+        "destination_stop_idx":  dest_idx,
+        "segment_length":        abs(dest_idx - orig_idx),
+
+        "month":                 6,
+        "day_of_week":           2,
+        "week_of_year":          24,
+        "is_weekend":            0,
+        "season":                2,
+
+        # Normale Wetterbedingungen
+        "orig_temp":             12.0,
+        "dest_temp":             12.0,
+
+        "orig_precip":           0.0,
+        "dest_precip":           0.0,
+
+        "orig_snow":             0.0,
+        "dest_snow":             0.0,
+
+        "orig_wind":             12.0,
+        "dest_wind":             12.0,
+
+        "orig_gusts":            18.0,
+        "dest_gusts":            18.0,
+
+        "orig_visibility":       10000.0,
+        "dest_visibility":       10000.0,
+
+        "orig_cloud":            20.0,
+        "dest_cloud":            20.0,
+
+        "orig_humidity":         60.0,
+        "dest_humidity":         60.0,
+
+        "orig_pressure":         1015.0,
+        "dest_pressure":         1015.0,
+
+        "bad_weather_score":     0.0,
+    })
+
+    hours = list(range(24))
+    delays = []
+
+    for h in hours:
+        row = {
+            **base,
+            "dep_hour": h,
+            "is_rush_hour": int(7 <= h <= 9 or 16 <= h <= 19),
+        }
+
+        X = pd.DataFrame([row])[feature_cols].fillna(0)
+
+        pred = max(0, float(reg.predict(X)[0]))
+        delays.append(pred)
+
+    fig, ax = plt.subplots(figsize=(8, 3.8))
+
+    ax.plot(
+        hours,
+        delays,
+        linewidth=2.5,
+        marker="o",
+        markersize=5,
+    )
+
+    ax.set_xticks(hours)
+
+    ax.set_xticklabels(
+        [f"{h:02d}:00" for h in hours],
+        rotation=45,
+        fontsize=7,
+    )
+
+    ax.set_ylabel("Erwartete Verspätung (min)", fontsize=9)
+    ax.set_xlabel("Abfahrtszeit", fontsize=9)
+
+    ax.set_title(
+        f"Regressionsmodell: erwartete Verspätung nach Uhrzeit\n"
+        f"{origin} → {destination}",
+        fontsize=10,
+    )
+
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+
+    return _fig_to_img(fig)
+
 # ─── MODELLEINBLICKE ─────────────────────────────────────────────────────────
 
 def _render_model_insights(clf, reg, feature_cols: list[str],
@@ -951,6 +1057,24 @@ def _render_model_insights(clf, reg, feature_cols: list[str],
             "steht für pünktlich, Orange für verspätet."
         )
         st.image(plot_single_tree(clf, feature_cols), use_container_width=True)
+        
+    with st.expander("Regressor: erwartete Verspätung nach Uhrzeit", expanded=False):
+            st.caption(
+            "Diese Grafik zeigt ausschliesslich die Vorhersage des "
+            "Regressors. Wetter und Route bleiben konstant."
+            )
+
+        st.image(
+            plot_regression_by_hour(
+                reg,
+                feature_cols,
+                origin,
+                destination,
+            ),
+            use_container_width=True,
+        )
+
+ 
 
 
 if __name__ == "__main__":
