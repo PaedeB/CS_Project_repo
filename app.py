@@ -754,7 +754,7 @@ def main():
         )
 
     with col_time:
-        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 29), step=7200)
+        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 29), step=60)
 
     dep_dt = datetime.combine(dep_date, dep_time_input)
 
@@ -793,16 +793,28 @@ def main():
     # ── Ergebnis anzeigen ─────────────────────────────────────────────────────
     st.subheader("Vorhersage")
 
-    if delay_class:
+    #if delay_class:
+        #if delay_mins >= 10:
+            #verdict_color = "🔴"
+            #verdict_text = "Deutliche Verspätung erwartet"
+        #else:
+            #verdict_color = "🟠"
+            #verdict_text = "Leichte Verspätung wahrscheinlich"
+    #else:
+        #verdict_color = "🟢"
+        #verdict_text = "Voraussichtlich pünktlich"
+
+    if delay_mins >= 3:
         if delay_mins >= 10:
             verdict_color = "🔴"
             verdict_text = "Deutliche Verspätung erwartet"
-        else:
+        else: 
             verdict_color = "🟠"
             verdict_text = "Leichte Verspätung wahrscheinlich"
     else:
         verdict_color = "🟢"
         verdict_text = "Voraussichtlich pünktlich"
+
 
     st.markdown(
         f"<div style='border-radius:8px; padding:16px 20px; background:#f0f2f6;"
