@@ -770,7 +770,7 @@ def main():
         return
 
     # ── Wetter laden ──────────────────────────────────────────────────────────
-    st.divider()
+
     arr_dt = dep_dt + timedelta(hours=1, minutes=6)
 
     with st.spinner("Wetterdaten werden geladen …"):
@@ -778,6 +778,7 @@ def main():
         dest_weather_all = fetch_weather(destination, arr_dt.date())
 
     w_orig = weather_for_hour(orig_weather_all, dep_dt.hour)
+    st.divider()
     w_dest = weather_for_hour(dest_weather_all, arr_dt.hour)
 
     # ── Vorhersage berechnen ──────────────────────────────────────────────────
