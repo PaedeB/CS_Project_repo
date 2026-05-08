@@ -825,11 +825,12 @@ def main():
         unsafe_allow_html=True,
     )
     st.write("")
+    st.caption(f"SBB-Schwelle: ≥{threshold} min = verspätet")
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2 = st.columns(2)
     m1.metric("Verspätungsrisiko", f"{delay_prob:.0%}")
     m2.metric("Erwartete Verspätung", f"{max(0, delay_mins):.1f} min")
-    m3.metric("SBB-Schwelle", f"≥ {threshold} min = verspätet")
+    #m3.metric("SBB-Schwelle", f"≥ {threshold} min = verspätet")
 
     # ── Wetterkarten ──────────────────────────────────────────────────────────
     st.subheader("Wetterbedingungen")
