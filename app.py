@@ -754,7 +754,7 @@ def main():
         )
 
     with col_time:
-        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 29), step=2:00:00)
+        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 29), step=7200)
 
     dep_dt = datetime.combine(dep_date, dep_time_input)
 
