@@ -870,11 +870,11 @@ def main():
         c6.metric("Zustand", desc[:18])
     
     with st.expander(st.markdown(f"**{weather_icon(w_orig)} Abfahrt — {origin}**"), expanded=False):
-        weather_card(origin, w_orig, "Abfahrt")
+        weather_card(w_orig)
     
     with st.expander(st.markdown(f"**{weather_icon(w_dest)} Abfahrt — {destination}**"), expanded = False):
-       
-        weather_card(destination, w_dest, "Ankunft")
+        weather_card(w_dest)
+
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
     if disruptions:
         st.subheader("⚠️ Aktive SBB-Störungen")
