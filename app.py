@@ -62,6 +62,8 @@ STOP_COORDS = {
     "St. Gallen":        {"lat": 47.4241, "lon": 9.3763},
 }
 
+
+
 WEATHER_VARIABLES = [
     "temperature_2m", "precipitation", "snowfall", "snow_depth",
     "wind_speed_10m", "wind_gusts_10m", "visibility",
@@ -752,7 +754,7 @@ def main():
         )
 
     with col_time:
-        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 7), step=60)
+        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 29), step=20:00)
 
     dep_dt = datetime.combine(dep_date, dep_time_input)
 
