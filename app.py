@@ -838,7 +838,7 @@ def main():
     w_col2 = st.columns(1)[0]
 
 
-    def weather_card(col, stop: str, w: dict, label: str):
+    def weather_card(w: dict):
         """
         Rendert eine kompakte Wetterkarte für Abfahrt oder Ankunft.
 
@@ -851,7 +851,6 @@ def main():
         desc = weather_description(wcode)
         
         #with col:
-        st.markdown(f"**{icon} {label} — {stop}**")
         c1, c2 = st.columns(2)
         c1.metric("Temp.",
         f"{w.get('temperature_2m', '—'):.1f} °C"
@@ -869,11 +868,13 @@ def main():
             f"{w.get('wind_gusts_10m', '—'):.0f} km/h"
             if w.get("wind_gusts_10m") is not None else "—")
         c6.metric("Zustand", desc[:18])
-
-    weather_card(w_col1, origin, w_orig, "Abfahrt")
     
-    weather_card(w_col2, destination, w_dest, "Ankunft")
-
+    with st.expander(st.markdown(f"**{weather_icon(w_orig)} Abfahrt — {origin}**"), expanded=False):
+        weather_card(origin, w_orig, "Abfahrt")
+    
+    with st.expander(st.markdown(f"**{weather_icon(w_dest)} Abfahrt — {destination}**"), expanded = False):
+       
+        weather_card(destination, w_dest, "Ankunft")
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
     if disruptions:
         st.subheader("⚠️ Aktive SBB-Störungen")
