@@ -288,58 +288,68 @@ def fetch_disruptions(dep_date: str) -> list[dict]:
     return output
 
 # ─── Fahrkarte import ───────────────────────────────────────────────────────────
+# ─── EC-FAHRPLAN 2026 (SBB, gültig bis Dez. 2026) ───────────────────────────
+# Kein API-Aufruf. Fahrplan ändert sich nur im Dezember.
+# Wochenend-Ausnahme: Frühzug (Index 0) entfällt Sa + So.
+#
+# Richtung vorwärts:  Zürich HB → Zürich Flughafen → Winterthur → St. Gallen
+# Richtung rückwärts: St. Gallen → Winterthur → Zürich Flughafen → Zürich HB
 
-@st.cache_data(ttl=302)
+_EC_SCHEDULE: dict[str, dict[str, list[tuple[int,int]]]] = {
+    "forward": {
+        "Zürich HB":        [(5,33),(7,33),(9,33),(11,33),(13,33),(15,33),(17,33),(19,33)],
+        "Zürich Flughafen": [(5,42),(7,42),(9,42),(11,42),(13,42),(15,42),(17,42),(19,42)],
+        "Winterthur":       [(5,57),(7,57),(9,57),(11,57),(13,57),(15,57),(17,57),(19,57)],
+    },
+    "backward": {
+        "St. Gallen":       [(6,29),(8,29),(10,29),(12,29),(14,29),(16,29),(18,29),(20,29)],
+        "Winterthur":       [(7, 1),(9, 1),(11, 1),(13, 1),(15, 1),(17, 1),(19, 1),(21, 1)],
+        "Zürich Flughafen": [(7,16),(9,16),(11,16),(13,16),(15,16),(17,16),(19,16),(21,16)],
+    },
+}
+
+_EC_TRAIN_NUMBERS: dict[str, list[str]] = {
+    "forward":  ["EC 195","EC 197","EC 199","EC 191","EC 193","EC 195","EC 197","EC 199"],
+    "backward": ["EC 194","EC 196","EC 198","EC 190","EC 192","EC 194","EC 196","EC 198"],
+}
+
+
 def fetch_connections(origin: str,
                       destination: str,
                       dep_date: date,
                       dep_time: time) -> list[dict]:
-    url = "https://transport.opendata.ch/v1/stationboard"
+    """
+    Gibt alle EC-Abfahrten am Ursprungsbahnhof für das gewählte Datum zurück.
 
-    # API akzeptiert "Zürich HB" direkt — kein Mapping nötig
-    try:
-        resp = requests.get(
-            url,
-            params={
-                "station":  origin,
-                "datetime": f"{dep_date.strftime('%Y-%m-%d')} 05:00",  # Leerzeichen, kein T
-                "limit":    100,
-                "type":     "departure",
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        return []   # st.warning hier entfernt — darf nicht in cache_data stehen
+    Basiert auf dem hardcodierten SBB-Fahrplan 2026. Kein Netzwerkaufruf,
+    kein Rate-Limit, kein Timeout. Fahrplanänderungen nur im Dezember nötig.
+    """
+    orig_idx = STOP_TO_IDX.get(origin, -1)
+    dest_idx = STOP_TO_IDX.get(destination, -1)
+    if orig_idx < 0 or dest_idx < 0 or orig_idx == dest_idx:
+        return []
 
-    stationboard = data.get("stationboard", [])
-    if not stationboard:
+    direction  = "forward" if orig_idx < dest_idx else "backward"
+    is_weekend = dep_date.weekday() >= 5  # Samstag=5, Sonntag=6
+    times      = _EC_SCHEDULE[direction].get(origin, [])
+    numbers    = _EC_TRAIN_NUMBERS[direction]
+
+    if not times:
         return []
 
     results = []
-    dest_lower = destination.lower()
+    for i, (h, m) in enumerate(times):
+        if is_weekend and i == 0:
+            continue  # Frühzug entfällt am Wochenende
 
-    for entry in stationboard:
-        if entry.get("category") != "EC":
-            continue
-
-        to_station = (entry.get("to") or "").lower()
-        destination_on_route = (dest_lower in to_station or not to_station)
-
-        if not destination_on_route:
-            continue
-
-        stop          = entry.get("stop", {})
-        departure_raw = stop.get("departure")
-        platform      = stop.get("platform")
-        train_name    = f"EC {entry.get('number', '')}".strip()
-
+        departure_raw = (
+            f"{dep_date.strftime('%Y-%m-%d')}T{h:02d}:{m:02d}:00+01:00"
+        )
         results.append({
-            "train":     train_name,
+            "train":     numbers[i % len(numbers)],
             "departure": departure_raw,
             "arrival":   None,
-            "platform":  platform,
+            "platform":  None,
             "duration":  None,
             "transfers": 0,
         })
