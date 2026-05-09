@@ -1,23 +1,7 @@
 """
 EC-Verspätungsprediktor — Streamlit-App
-=======================================
-
-Start:
-    streamlit run app.py
-
-Diese Datei enthält die komplette Weboberfläche für das bereits trainierte
-Modell aus ``ec_models.pkl``.
-
-Was die App weiterhin live lädt:
-    • Wetterdaten von Open-Meteo, weil Temperatur, Niederschlag, Schnee, Wind
-      und Sichtweite Teil des trainierten Merkmalsvektors sind.
-    • Aktuelle SBB-Störungsmeldungen als Kontextanzeige. Sie fliessen nicht in
-      das Modell ein, weil im Training keine historischen Störungsmeldungen mit
-      gleicher Struktur verfügbar sind.
-
-Was lokal vorausgesetzt wird:
-    • ``ec_models.pkl`` muss vorhanden sein. Diese Datei wird vom Trainingsskript
-      ``ec_delay_predictor.py`` erzeugt.
+Start: streamlit run app.py
+Benötigt: ec_models.pkl, Internetzugang für Wetter- und Störungsdaten.
 """
 
 import io
@@ -32,7 +16,7 @@ import requests
 import streamlit as st
 from sklearn.tree import plot_tree
 
-matplotlib.use("Agg")  # Headless-Backend: Matplotlib braucht kein Display.
+matplotlib.use("Agg")
 
 # ─── SEITENKONFIGURATION ─────────────────────────────────────────────────────
 
@@ -43,10 +27,6 @@ st.set_page_config(
 )
 
 # ─── KONSTANTEN ───────────────────────────────────────────────────────────────
-#
-# Diese Konstanten spiegeln die Trainingskonfiguration aus
-# ec_delay_predictor.py. Sie werden hier absichtlich dupliziert, damit die
-# Web-App auch ohne Import des Trainingsskripts lauffähig bleibt.
 
 STOPS_ORDERED = ["Zürich HB", "Zürich Flughafen", "Winterthur", "St. Gallen"]
 STOP_TO_IDX = {s: i for i, s in enumerate(STOPS_ORDERED)}
@@ -57,8 +37,6 @@ STOP_COORDS = {
     "Winterthur":        {"lat": 47.4997, "lon": 8.7241},
     "St. Gallen":        {"lat": 47.4241, "lon": 9.3763},
 }
-
-
 
 WEATHER_VARIABLES = [
     "temperature_2m", "precipitation", "snowfall", "snow_depth",
@@ -94,13 +72,7 @@ WMO_ICONS = {
 
 @st.cache_resource(show_spinner="Modelle werden geladen …")
 def load_models():
-    """
-    Lädt die trainierten Modelle aus ``ec_models.pkl``.
-
-    Streamlit cached das Ergebnis als Resource, weil das Modell über mehrere
-    Interaktionen hinweg identisch bleibt und nicht bei jedem Klick neu von der
-    Festplatte geladen werden muss.
-    """
+    """Lädt trainierte Modelle aus ec_models.pkl."""
     try:
         return joblib.load("ec_models.pkl")
     except FileNotFoundError:
@@ -111,25 +83,7 @@ def load_models():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_weather(stop: str, target_date: date) -> dict | None:
-    """
-    Lädt stündliche Wetterdaten für eine Haltestelle und einen Tag.
-
-    Für vergangene Daten wird die Open-Meteo Archive API verwendet, für den
-    heutigen und zukünftige Tage die Forecast API. Beide Schnittstellen liefern
-    dieselben Variablennamen.
-
-    Parameter
-    ---------
-    stop : str
-        Haltestelle aus ``STOP_COORDS``.
-    target_date : date
-        Gewünschter Tag
-
-    Rückgabe
-    ---------
-    dict | None
-        ``{stunde: wetterwerte}`` oder None bei Fehlern/leerer Antwort.
-    """
+    """Stündliche Wetterdaten für eine Haltestelle von Open-Meteo."""
     coords = STOP_COORDS[stop]
     today = date.today()
     date_str = target_date.isoformat()
@@ -165,12 +119,7 @@ def fetch_weather(stop: str, target_date: date) -> dict | None:
 
 
 def weather_for_hour(weather_by_hour: dict | None, hour: int) -> dict:
-    """
-    Gibt den Wetterdaten für eine Stunde zurück.
-
-    Fehlt die exakte Stunde, wird die nächste verfügbare verwendet.
-    Ohne Wetterdaten wird ein leeres Wörterbuch zurückgegeben.
-    """
+    """Wetterwerte für eine Stunde, mit Fallback auf nächste verfügbare."""
     if not weather_by_hour:
         return {}
     if hour in weather_by_hour:
@@ -186,8 +135,6 @@ SBB_DISRUPTIONS_URL = (
     "/rail-traffic-information/records"
 )
 
-# Die SBB/Opendatasoft-Antworten können je nach API-Version leicht andere
-# Feldnamen verwenden. Diese Kandidatenlisten halten die Auswertung robust.
 _DESC_KEYS = ("description", "title", "beschreibung", "meldungstext")
 _CAUSE_KEYS = ("cause", "ursache", "grund")
 _STATUS_KEYS = ("status",)
@@ -195,12 +142,7 @@ _TYPE_KEYS = ("transporttype", "verkehrsart", "type")
 
 
 def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
-    """
-    Gibt den ersten vorhandenen Wert aus einer Liste möglicher Feldnamen zurück.
-
-    So kann dieselbe Logik mit deutschen und englischen SBB-Feldnamen umgehen,
-    ohne an einer kleinen Schemaänderung der API zu scheitern.
-    """
+    """Gibt den ersten vorhandenen Wert aus einer Liste von Feldnamen zurück."""
     for key in keys:
         value = item.get(key)
         if value:
@@ -210,17 +152,7 @@ def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
 
 @st.cache_data(ttl=302, show_spinner=False)
 def fetch_disruptions(dep_date: str) -> list[dict]:
-    """
-    Lädt aktuelle Fernverkehrs-Störungen aus SBB Open Data.
-
-    Bevorzugt Meldungen, die am gewählten Datum aktiv sind.
-
-    Rückgabe
-    ---------
-    list[dict]
-        Meldungen mit ``type``, ``severity`` und ``description``.
-        Bei Fehlern wird eine leere Liste zurückgegeben.
-    """
+    """Aktuelle Fernverkehrs-Störungen von SBB Open Data."""
     day_start = f"{dep_date}T00:00:00"
     day_end = f"{dep_date}T23:59:59"
 
@@ -287,26 +219,16 @@ def fetch_disruptions(dep_date: str) -> list[dict]:
 
     return output
 
-# ─── Fahrkarte import ───────────────────────────────────────────────────────────
-# ─── EC-FAHRPLAN 2026 (SBB, gültig bis Dez. 2026) ───────────────────────────
-# Kein API-Aufruf. Fahrplan ändert sich nur im Dezember.
-# Wochenend-Ausnahme: Frühzug (Index 0) entfällt Sa + So.
-#
-# Richtung vorwärts:  Zürich HB → Zürich Flughafen → Winterthur → St. Gallen
-# Richtung rückwärts: St. Gallen → Winterthur → Zürich Flughafen → Zürich HB
-
+# ─── EC-FAHRPLAN 2026 ────────────────────────────────────────────────────────
+# Hardcodiert; Frühzug (Index 0) entfällt Sa + So.
 
 _EC_SCHEDULE: dict[str, dict[str, list[tuple[int,int]]]] = {
     "forward": {
-        # Zürich HB ab xx:33, 8 Züge täglich (05:33–19:33)
-        # Frühzug 05:33 entfällt Sa+So → Index 0
         "Zürich HB":        [(5,33),(7,33),(9,33),(11,33),(13,33),(15,33),(17,33),(19,33)],
         "Zürich Flughafen": [(5,42),(7,42),(9,42),(11,42),(13,42),(15,42),(17,42),(19,42)],
         "Winterthur":       [(5,57),(7,57),(9,57),(11,57),(13,57),(15,57),(17,57),(19,57)],
     },
     "backward": {
-        # St. Gallen ab xx:29, 8 Züge täglich (06:29–20:29)
-        # Frühzug 06:29 entfällt Sa+So → Index 0
         "St. Gallen":       [(6,29),(7,29),(9,29),(11,29),(13,29),(15,29),(17,29),(20,29)],
         "Winterthur":       [(7, 1),(8, 1),(10, 1),(12, 1),(14, 1),(16, 1),(18, 1),(21, 1)],
         "Zürich Flughafen": [(7,16),(8,16),(10,16),(12,16),(14,16),(16,16),(18,16),(21,16)],
@@ -323,19 +245,14 @@ def fetch_connections(origin: str,
                       destination: str,
                       dep_date: date,
                       dep_time: time) -> list[dict]:
-    """
-    Gibt alle EC-Abfahrten am Ursprungsbahnhof für das gewählte Datum zurück.
-
-    Basiert auf dem hardcodierten SBB-Fahrplan 2026. Kein Netzwerkaufruf,
-    kein Rate-Limit, kein Timeout. Fahrplanänderungen nur im Dezember nötig.
-    """
+    """EC-Abfahrten am Ursprungsbahnhof aus dem hardcodierten Fahrplan 2026."""
     orig_idx = STOP_TO_IDX.get(origin, -1)
     dest_idx = STOP_TO_IDX.get(destination, -1)
     if orig_idx < 0 or dest_idx < 0 or orig_idx == dest_idx:
         return []
 
     direction  = "forward" if orig_idx < dest_idx else "backward"
-    is_weekend = dep_date.weekday() >= 5  # Samstag=5, Sonntag=6
+    is_weekend = dep_date.weekday() >= 5
     times      = _EC_SCHEDULE[direction].get(origin, [])
     numbers    = _EC_TRAIN_NUMBERS[direction]
 
@@ -345,7 +262,7 @@ def fetch_connections(origin: str,
     results = []
     for i, (h, m) in enumerate(times):
         if is_weekend and i == 0:
-            continue  # Frühzug entfällt am Wochenende
+            continue
 
         departure_raw = (
             f"{dep_date.strftime('%Y-%m-%d')}T{h:02d}:{m:02d}:00+01:00"
@@ -364,24 +281,13 @@ def fetch_connections(origin: str,
 # ─── FEATURE-AUFBAU ───────────────────────────────────────────────────────────
 
 def _wv(w: dict, key: str, default=np.nan):
-    """
-    Liest einen Wetterwert mit Fallback aus einem Wörterbuch.
-
-    Open-Meteo kann einzelne Werte als None liefern. Für das Modell müssen aber
-    alle Merkmalsspalten numerisch befüllt sein; deshalb ersetzt diese Funktion
-    fehlende Einträge durch den übergebenen Standardwert.
-    """
+    """Wetterwert mit Fallback aus einem Wörterbuch lesen."""
     v = w.get(key)
     return v if v is not None else default
 
 
 def weather_record(w: dict, prefix: str) -> dict:
-    """
-    Wandelt Open-Meteo-Werte in Modellmerkmale um.
-
-    ``prefix`` ist entweder ``orig`` für den Ursprungsbahnhof oder ``dest`` für
-    den Zielbahnhof. So entstehen Spalten wie ``orig_temp`` und ``dest_temp``.
-    """
+    """Wetter-Dict in Merkmalseinträge mit Präfix umwandeln."""
     return {
         f"{prefix}_temp":         _wv(w, "temperature_2m"),
         f"{prefix}_precip":       _wv(w, "precipitation",     0),
@@ -400,12 +306,7 @@ def weather_record(w: dict, prefix: str) -> dict:
 def build_features(origin: str, destination: str, dep_dt: datetime,
                    w_orig: dict, w_dest: dict,
                    feature_cols: list[str]) -> pd.DataFrame:
-    """
-    Erstellt den Merkmalsvektor für eine Vorhersage.
-
-    Die Spaltenreihenfolge entspricht dem Training. Fehlende Spalten
-    werden mit 0 ergänzt.
-    """
+    """Merkmalsvektor für eine Vorhersage erstellen."""
     orig_idx = STOP_TO_IDX[origin]
     dest_idx = STOP_TO_IDX[destination]
     direction = 0 if orig_idx < dest_idx else 1
@@ -431,7 +332,6 @@ def build_features(origin: str, destination: str, dep_dt: datetime,
         **weather_record(w_dest, "dest"),
     }
 
-    # Abgeleitete Merkmale: gleiche Berechnungen wie im Trainingsskript.
     record["bad_weather_score"] = (
           (min(record["orig_snow"],   5)     / 5)      * 1.5
         + (min(record["orig_precip"], 15)    / 15)     * 1.0
@@ -457,13 +357,7 @@ def build_features(origin: str, destination: str, dep_dt: datetime,
 # ─── UI-HILFSFUNKTIONEN ──────────────────────────────────────────────────────
 
 def route_diagram(origin: str, destination: str) -> str:
-    """
-    Erzeugt eine kompakte Markdown-Darstellung der gewählten Strecke.
-
-    Der Start wird grün, das Ziel rot markiert. Haltestellen, die nicht auf dem
-    aktuell gewählten Segment liegen, werden durchgestrichen. Die Funktion gibt
-    nur Text zurück; Streamlit rendert ihn später mit ``st.markdown``.
-    """
+    """Markdown-Darstellung der gewählten Strecke."""
     orig_idx = STOP_TO_IDX[origin]
     dest_idx = STOP_TO_IDX[destination]
     forward = orig_idx < dest_idx
@@ -488,25 +382,19 @@ def route_diagram(origin: str, destination: str) -> str:
 
 
 def weather_icon(code: int | None) -> str:
-    """Gibt ein Wettersymbol zum WMO-Wettercode zurück."""
+    """Wettersymbol zum WMO-Code."""
     return WMO_ICONS.get(int(code) if code else 0, "🌡️")
 
 
 def weather_description(code: int | None) -> str:
-    """Gibt eine deutschsprachige Beschreibung zum WMO-Wettercode zurück."""
+    """Deutschsprachige Beschreibung zum WMO-Code."""
     return WMO_DESCRIPTIONS.get(int(code) if code else 0, "Unbekannt")
 
 
 # ─── VISUALISIERUNGEN ────────────────────────────────────────────────────────
 
 def _fig_to_img(fig) -> bytes:
-    """
-    Rendert eine Matplotlib-Figur als PNG-Bytefolge.
-
-    Streamlit kann diese Bytes direkt mit ``st.image`` anzeigen. Nach dem
-    Speichern wird die Figur geschlossen, damit bei wiederholten Interaktionen
-    keine Matplotlib-Objekte im Speicher hängen bleiben.
-    """
+    """Matplotlib-Figur als PNG-Bytes rendern."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
     plt.close(fig)
@@ -515,13 +403,7 @@ def _fig_to_img(fig) -> bytes:
 
 
 def plot_feature_importances(clf, feature_cols: list[str]) -> bytes:
-    """
-    Visualisiert die 15 wichtigsten Eingabemerkmale des Klassifikators.
-
-    Die Werte stammen aus der Gini-Wichtigkeit des Random Forest. Hohe Balken
-    bedeuten, dass das Merkmal häufig und wirkungsvoll für Baum-Splits genutzt
-    wurde.
-    """
+    """Top 15 Merkmalswichtigkeiten des Klassifikators."""
     imp = pd.Series(clf.feature_importances_, index=feature_cols).nlargest(15)
     fig, ax = plt.subplots(figsize=(7, 4.5))
     colors = ["#e84040" if imp[f] > imp.median() else "#5b9cf6" for f in imp.index]
@@ -536,13 +418,7 @@ def plot_feature_importances(clf, feature_cols: list[str]) -> bytes:
 
 def plot_delay_by_hour(clf, reg, feature_cols: list[str],
                        origin: str, destination: str) -> bytes:
-    """
-    Zeigt den modellierten Einfluss der Abfahrtsstunde.
-
-    Die Funktion erzeugt künstliche Eingaben für alle Stunden von 0 bis 23 und
-    hält Route, Wochentag und Wetter konstant. So wird sichtbar, wie sich die
-    Vorhersage allein durch die Tageszeit verändert.
-    """
+    """Modellierter Einfluss der Abfahrtsstunde auf Verspätung."""
     base = {col: 0 for col in feature_cols}
     orig_idx = STOP_TO_IDX[origin]
     dest_idx = STOP_TO_IDX[destination]
@@ -556,7 +432,6 @@ def plot_delay_by_hour(clf, reg, feature_cols: list[str],
         "week_of_year":          24,
         "is_weekend":            0,
         "season":                2,
-        # Typische Schönwetterwerte als konstante Vergleichsbasis.
         "orig_temp":         10.0,  "dest_temp":         10.0,
         "orig_wind":         15.0,  "dest_wind":         15.0,
         "orig_gusts":        25.0,  "dest_gusts":        25.0,
@@ -601,7 +476,6 @@ def plot_delay_by_hour(clf, reg, feature_cols: list[str],
         fontsize=10,
     )
 
-    # Beide Achsen haben eigene Linien; hier werden die Legenden zusammengeführt.
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc="upper left")
@@ -612,12 +486,7 @@ def plot_delay_by_hour(clf, reg, feature_cols: list[str],
 
 def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
                           origin: str, destination: str) -> bytes:
-    """
-    Zeigt den modellierten Einfluss des Schlechtwetter-Scores.
-
-    Der Score wird von 0 bis 4 variiert. Aus jedem Score werden plausible
-    Wetterwerte für Schnee, Regen, Windböen und Sichtweite abgeleitet.
-    """
+    """Modellierter Einfluss des Schlechtwetter-Scores auf Verspätung."""
     base = {col: 0 for col in feature_cols}
     orig_idx = STOP_TO_IDX[origin]
     dest_idx = STOP_TO_IDX[destination]
@@ -643,8 +512,6 @@ def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
     scores = np.linspace(0, 4, 50)
     probs, mins_ = [], []
     for s in scores:
-        # Score grob auf physische Werte zurückprojizieren:
-        # score ≈ snow*1.5 + precip*1.0 + gusts*0.8 + visibility_loss*0.7
         snow = min(s / 1.5, 5.0)
         precip = min(s / 1.0, 15.0)
         gusts = min(s / 0.8, 100.0)
@@ -690,7 +557,6 @@ def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
         fontsize=10,
     )
 
-    # Dezente Bereiche helfen, milde, mittlere und starke Wetterlagen zu lesen.
     ax1.axvspan(0,   1.0, alpha=0.06, color="green",  label="Mild")
     ax1.axvspan(1.0, 2.5, alpha=0.06, color="orange", label="Mittel")
     ax1.axvspan(2.5, 4.0, alpha=0.06, color="red",    label="Stark")
@@ -704,12 +570,7 @@ def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
 
 
 def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
-    """
-    Visualisiert einen einzelnen Entscheidungsbaum aus dem Random Forest.
-
-    Ein kompletter Baum wäre sehr gross. Deshalb werden nur die ersten drei
-    Ebenen gezeigt, damit die wichtigsten frühen Entscheidungen lesbar bleiben.
-    """
+    """Einen Entscheidungsbaum aus dem Random Forest visualisieren (3 Ebenen)."""
     estimator = clf.estimators_[0]
     fig, ax = plt.subplots(figsize=(18, 6))
     plot_tree(
@@ -718,7 +579,7 @@ def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
         class_names=["Pünktlich", "Verspätet"],
         filled=True,
         rounded=True,
-        max_depth=3,          # Nur die oberen drei Ebenen zeigen.
+        max_depth=3,
         fontsize=7,
         ax=ax,
         impurity=False,
@@ -736,21 +597,10 @@ def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
 # ─── HAUPT-APP ────────────────────────────────────────────────────────────────
 
 def main():
-    """
-    Rendert die komplette Streamlit-Oberfläche und führt Vorhersagen aus.
-
-    Ablauf:
-      1. Modellpaket laden.
-      2. Route, Datum und Abfahrtszeit aus der UI lesen.
-      3. Wetter für Abfahrt und approximierte Ankunft laden.
-      4. Klassifikator und Regressor ausführen.
-      5. Aktuelle SBB-Störungen als Kontext laden und anzeigen.
-      6. Ergebnis, Wetterwerte und Modellvisualisierungen anzeigen.
-    """
+    """Streamlit-Oberfläche rendern und Vorhersagen ausführen."""
     st.title("🚆 EC-Verspätungsprädiktor")
     st.caption("Korridor Zürich HB ↔ St. Gallen · Modell + Open-Meteo-Wetterdaten")
 
-    # ── Modelle laden ─────────────────────────────────────────────────────────
     models = load_models()
     if models is None:
         st.error("**Kein trainiertes Modell gefunden.**")
@@ -768,7 +618,7 @@ def main():
     feature_cols = models["feature_cols"]
     threshold = models.get("threshold", 3)
 
-# ── Routenauswahl ─────────────────────────────────────────────────────────
+    # ── Routenauswahl ─────────────────────────────────────────────────────────
     st.subheader("Route")
     col_from, col_arrow, col_to = st.columns([5, 1, 5])
 
@@ -859,7 +709,6 @@ def main():
             st.warning("Fahrplandaten konnten nicht geladen werden.")
             st.stop()
 
-    # dep_dt erst hier, nachdem dep_time_input gesetzt ist.
     dep_dt = datetime.combine(dep_date, dep_time_input)
 
     # ── Vorhersage-Button ─────────────────────────────────────────────────────
@@ -868,13 +717,10 @@ def main():
 
     if not predict_clicked:
         st.info("Wählen Sie Route und Abfahrtszeit und klicken Sie dann auf **Verspätung vorhersagen**.")
-
-        # Modellgrafiken bereits vor der ersten Vorhersage anzeigen.
         _render_model_insights(clf, reg, feature_cols, origin, destination)
         return
 
     # ── Wetter laden ──────────────────────────────────────────────────────────
-
     arr_dt = dep_dt + timedelta(hours=1, minutes=6)
 
     with st.spinner("Wetterdaten werden geladen …"):
@@ -898,28 +744,16 @@ def main():
     # ── Ergebnis anzeigen ─────────────────────────────────────────────────────
     st.subheader("Vorhersage")
 
-    #if delay_class:
-        #if delay_mins >= 10:
-            #verdict_color = "🔴"
-            #verdict_text = "Deutliche Verspätung erwartet"
-        #else:
-            #verdict_color = "🟠"
-            #verdict_text = "Leichte Verspätung wahrscheinlich"
-    #else:
-        #verdict_color = "🟢"
-        #verdict_text = "Voraussichtlich pünktlich"
-
     if delay_mins >= 3:
         if delay_mins >= 10:
             verdict_color = "🔴"
             verdict_text = "Deutliche Verspätung erwartet"
-        else: 
+        else:
             verdict_color = "🟠"
             verdict_text = "Leichte Verspätung wahrscheinlich"
     else:
         verdict_color = "🟢"
         verdict_text = "Voraussichtlich pünktlich"
-
 
     st.markdown(
         f"<div style='border-radius:8px; padding:16px 20px; background:#f0f2f6;"
@@ -934,26 +768,17 @@ def main():
     m1, m2 = st.columns(2)
     m1.metric("Verspätungsrisiko", f"{delay_prob:.0%}")
     m2.metric("Erwartete Verspätung", f"{max(0, delay_mins):.1f} min")
-    #m3.metric("SBB-Schwelle", f"≥ {threshold} min = verspätet")
 
     # ── Wetterkarten ──────────────────────────────────────────────────────────
     st.subheader("Wetterbedingungen")
     w_col1 = st.columns(1)[0]
     w_col2 = st.columns(1)[0]
 
-
     def weather_card(w: dict):
-        """
-        Rendert eine kompakte Wetterkarte für Abfahrt oder Ankunft.
-
-        Die Karte zeigt nur die Modell-relevanten Hauptwerte. Fehlende Werte
-        werden als Gedankenstrich angezeigt, damit die UI bei leeren
-        Wetterantworten stabil bleibt.
-        """
+        """Kompakte Wetterkarte mit Hauptwerten."""
         wcode = int(w.get("weather_code") or 0)
         desc = weather_description(wcode)
-        
-        #with col:
+
         c1, c2 = st.columns(2)
         c1.metric("Temp.",
         f"{w.get('temperature_2m', '—'):.1f} °C"
@@ -965,20 +790,20 @@ def main():
         c4.metric("Wind",
             f"{w.get('wind_speed_10m', '—'):.0f} km/h"
             if w.get("wind_speed_10m") is not None else "—")
-        
+
         c5, c6 = st.columns(2)
         c5.metric("Böen",
             f"{w.get('wind_gusts_10m', '—'):.0f} km/h"
             if w.get("wind_gusts_10m") is not None else "—")
         c6.metric("Zustand", desc[:18])
-    
+
     icon_dest = weather_icon(int(w_dest.get("weather_code") or 0))
     icon_orig = weather_icon(int(w_orig.get("weather_code") or 0))
 
     with st.expander((f"**{icon_dest} Abfahrt — {origin}**"), expanded=False):
         weather_card(w_orig)
-    
-    with st.expander((f"**{icon_orig} Abfahrt — {destination}**"), expanded = False):
+
+    with st.expander((f"**{icon_orig} Abfahrt — {destination}**"), expanded=False):
         weather_card(w_dest)
 
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
@@ -1001,21 +826,14 @@ def main():
     else:
         st.success("Keine aktiven Fernverkehrs-Störungen für dieses Datum gefunden.")
 
-    # ── Modelleinblicke ───────────────────────────────────────────────────────
     _render_model_insights(clf, reg, feature_cols, origin, destination)
 
 
-# --- Plot für die Uhrzeitentwicklung ---------
+# ─── REGRESSIONSPLOT ─────────────────────────────────────────────────────────
+
 def plot_regression_by_hour(reg, feature_cols: list[str],
                             origin: str, destination: str) -> bytes:
-    """
-    Zeigt die vom Regressor erwartete Verspätung je Abfahrtsstunde.
-
-    Für jede Stunde von 00 bis 23 wird eine künstliche Eingabe erzeugt.
-    Wetter und Route bleiben konstant, damit nur der Einfluss der Uhrzeit
-    sichtbar wird.
-    """
-
+    """Regressorvorhersage für die tatsächlichen EC-Abfahrtszeiten."""
     base = {col: 0 for col in feature_cols}
 
     orig_idx = STOP_TO_IDX[origin]
@@ -1026,41 +844,29 @@ def plot_regression_by_hour(reg, feature_cols: list[str],
         "origin_stop_idx":       orig_idx,
         "destination_stop_idx":  dest_idx,
         "segment_length":        abs(dest_idx - orig_idx),
-
         "month":                 6,
         "day_of_week":           2,
         "week_of_year":          24,
         "is_weekend":            0,
         "season":                2,
-
-        # Normale Wetterbedingungen
         "orig_temp":             12.0,
         "dest_temp":             12.0,
-
         "orig_precip":           0.0,
         "dest_precip":           0.0,
-
         "orig_snow":             0.0,
         "dest_snow":             0.0,
-
         "orig_wind":             12.0,
         "dest_wind":             12.0,
-
         "orig_gusts":            18.0,
         "dest_gusts":            18.0,
-
         "orig_visibility":       10000.0,
         "dest_visibility":       10000.0,
-
         "orig_cloud":            20.0,
         "dest_cloud":            20.0,
-
         "orig_humidity":         60.0,
         "dest_humidity":         60.0,
-
         "orig_pressure":         1015.0,
         "dest_pressure":         1015.0,
-
         "bad_weather_score":     0.0,
     })
 
@@ -1109,30 +915,22 @@ def plot_regression_by_hour(reg, feature_cols: list[str],
     ax.set_xlabel("Abfahrtszeit", fontsize=9)
 
     ax.set_title(
-        f"Regressionsmodell: erwartete Verspätung nach Uhrzeit\n"
+        f"Regressionsmodell: erwartete Verspätung nach Abfahrtszeit\n"
         f"{origin} → {destination}",
         fontsize=10,
     )
 
     ax.grid(True, alpha=0.3)
-
     fig.tight_layout()
 
     return _fig_to_img(fig)
+
 
 # ─── MODELLEINBLICKE ─────────────────────────────────────────────────────────
 
 def _render_model_insights(clf, reg, feature_cols: list[str],
                            origin: str, destination: str) -> None:
-    """
-    Rendert die erklärenden Modellgrafiken.
-
-    Die Expander zeigen:
-      1. Wichtigste Merkmale des Klassifikators.
-      2. Vorhersageverlauf nach Abfahrtsstunde.
-      3. Vorhersageverlauf nach Wetterbelastung.
-      4. Einen beispielhaften Entscheidungsbaum aus dem Random Forest.
-    """
+    """Erklärende Modellgrafiken in Expandern anzeigen."""
     st.divider()
     st.subheader("📊 Modelleinblicke")
 
@@ -1171,22 +969,14 @@ def _render_model_insights(clf, reg, feature_cols: list[str],
         st.image(plot_single_tree(clf, feature_cols), use_container_width=True)
 
     with st.expander("Regressor: erwartete Verspätung nach Uhrzeit", expanded=False):
-            st.caption(
+        st.caption(
             "Diese Grafik zeigt ausschliesslich die Vorhersage des "
             "Regressors. Wetter und Route bleiben konstant."
-            )
-
-            st.image(
-            plot_regression_by_hour(
-                reg,
-                feature_cols,
-                origin,
-                destination,
-            ),
+        )
+        st.image(
+            plot_regression_by_hour(reg, feature_cols, origin, destination),
             use_container_width=True,
-            )
-
- 
+        )
 
 
 if __name__ == "__main__":
