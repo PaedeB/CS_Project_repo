@@ -294,72 +294,76 @@ def fetch_connections(origin: str,
                       destination: str,
                       dep_date: date,
                       dep_time: time) -> list[dict]:
+    """
+    Lädt alle EC-Abfahrten des gewählten Tages am Ursprungsbahnhof.
 
-    url = "https://transport.opendata.ch/v1/connections"
+    Verwendet /stationboard statt /connections, damit alle Züge des Tages
+    in einem einzigen Request geliefert werden.
+    """
+    url = "https://transport.opendata.ch/v1/stationboard"
 
     try:
         resp = requests.get(
             url,
             params={
-                "from": origin,
-                "to": destination,
-                "date": dep_date.strftime("%Y-%m-%d"),
-                "time": dep_time.strftime("%H:%M"),
-                "limit": 10,
-                "transportations": "train",
+                "station":  origin,
+                "datetime": f"{dep_date.strftime('%Y-%m-%d')} 05:00",
+                "limit":    100,
+                "type":     "departure",
             },
             timeout=15,
         )
-
         resp.raise_for_status()
-
     except Exception as exc:
         st.warning(f"Fahrplandaten konnten nicht geladen werden: {exc}")
         return []
 
-    data = resp.json()
-
     results = []
+    dest_lower = destination.lower()
 
-    for conn in data.get("connections", []):
-
-        sections = conn.get("sections", [])
-
-        ec_found = False
-        train_name = "Unbekannt"
-
-        for sec in sections:
-
-            journey = sec.get("journey")
-
-            if not journey:
-                continue
-
-            category = journey.get("category", "")
-            number = journey.get("number", "")
-
-            # Nur EC-Züge akzeptieren
-            if category != "EC":
-                continue
-
-            train_name = f"{category} {number}"
-            ec_found = True
-            break
-
-        # Verbindung überspringen wenn kein EC
-        if not ec_found:
+    for entry in resp.json().get("stationboard", []):
+        # Nur EC-Züge
+        if entry.get("category") != "EC":
             continue
 
-        departure = conn.get("from", {})
-        arrival = conn.get("to", {})
+        # Richtung prüfen
+        to_station = (entry.get("to") or "").lower()
+        pass_list  = entry.get("passList") or []
+        stop_names = [
+            (s.get("station") or {}).get("name", "").lower()
+            for s in pass_list
+        ]
+
+        if pass_list:
+            # passList vorhanden → genau prüfen ob Ziel auf der Route liegt
+            destination_on_route = (
+                dest_lower in to_station
+                or any(dest_lower in s for s in stop_names)
+            )
+        else:
+            # passList fehlt → nur anhand des Endbahnhofs prüfen.
+            # Wenn auch to_station leer ist, Zug trotzdem behalten
+            # (lieber zu viel als zu wenig anzeigen).
+            destination_on_route = (
+                dest_lower in to_station
+                or not to_station
+            )
+
+        if not destination_on_route:
+            continue
+
+        stop          = entry.get("stop", {})
+        departure_raw = stop.get("departure")
+        platform      = stop.get("platform")
+        train_name    = f"EC {entry.get('number', '')}".strip()
 
         results.append({
-            "train": train_name,
-            "departure": departure.get("departure"),
-            "arrival": arrival.get("arrival"),
-            "platform": departure.get("platform"),
-            "duration": conn.get("duration"),
-            "transfers": conn.get("transfers"),
+            "train":     train_name,
+            "departure": departure_raw,
+            "arrival":   None,
+            "platform":  platform,
+            "duration":  None,
+            "transfers": 0,
         })
 
     return results
@@ -865,7 +869,7 @@ def main():
 
     # dep_dt erst hier, nachdem dep_time_input gesetzt ist.
     dep_dt = datetime.combine(dep_date, dep_time_input)
-    
+
     # ── Vorhersage-Button ─────────────────────────────────────────────────────
     st.divider()
     predict_clicked = st.button("🔮 Verspätung vorhersagen", type="primary", use_container_width=True)
