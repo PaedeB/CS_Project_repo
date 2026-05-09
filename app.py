@@ -1064,10 +1064,15 @@ def plot_regression_by_hour(reg, feature_cols: list[str],
         "bad_weather_score":     0.0,
     })
 
-    hours = list(range(24))
-    delays = []
+    direction_key = "forward" if orig_idx < dest_idx else "backward"
+    schedule_times = _EC_SCHEDULE[direction_key].get(origin, [])
+    if not schedule_times:
+        schedule_times = [(h, 0) for h in range(24)]
 
-    for h in hours:
+    delays = []
+    x_labels = []
+
+    for h, m in schedule_times:
         row = {
             **base,
             "dep_hour": h,
@@ -1078,21 +1083,24 @@ def plot_regression_by_hour(reg, feature_cols: list[str],
 
         pred = max(0, float(reg.predict(X)[0]))
         delays.append(pred)
+        x_labels.append(f"{h:02d}:{m:02d}")
+
+    x_pos = list(range(len(schedule_times)))
 
     fig, ax = plt.subplots(figsize=(8, 3.8))
 
     ax.plot(
-        hours,
+        x_pos,
         delays,
         linewidth=2.5,
         marker="o",
         markersize=5,
     )
 
-    ax.set_xticks(hours)
+    ax.set_xticks(x_pos)
 
     ax.set_xticklabels(
-        [f"{h:02d}:00" for h in hours],
+        x_labels,
         rotation=45,
         fontsize=7,
     )
