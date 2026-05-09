@@ -6,9 +6,7 @@ Start:
     streamlit run app.py
 
 Diese Datei enthält die komplette Weboberfläche für das bereits trainierte
-Modell aus ``ec_models.pkl``. Die App lädt keine SBB-/OpenTransport-Ist-Daten
-oder Fahrplandaten mehr von Bahn-Websites. Diese Abfrage war unzuverlässig und
-wurde deshalb entfernt.
+Modell aus ``ec_models.pkl``.
 
 Was die App weiterhin live lädt:
     • Wetterdaten von Open-Meteo, weil Temperatur, Niederschlag, Schnee, Wind
@@ -48,9 +46,7 @@ st.set_page_config(
 #
 # Diese Konstanten spiegeln die Trainingskonfiguration aus
 # ec_delay_predictor.py. Sie werden hier absichtlich dupliziert, damit die
-# Web-App auch ohne Import des Trainingsskripts lauffähig bleibt. Wichtig:
-# Merkmalsnamen bleiben Englisch, weil sie exakt zu den im Modell gespeicherten
-# Spaltennamen passen müssen.
+# Web-App auch ohne Import des Trainingsskripts lauffähig bleibt.
 
 STOPS_ORDERED = ["Zürich HB", "Zürich Flughafen", "Winterthur", "St. Gallen"]
 STOP_TO_IDX = {s: i for i, s in enumerate(STOPS_ORDERED)}
@@ -104,12 +100,6 @@ def load_models():
     Streamlit cached das Ergebnis als Resource, weil das Modell über mehrere
     Interaktionen hinweg identisch bleibt und nicht bei jedem Klick neu von der
     Festplatte geladen werden muss.
-
-    Rückgabe
-    --------
-    dict | None
-        Modellpaket mit Klassifikator, Regressor und Merkmalsliste, oder None,
-        wenn die Datei nicht vorhanden ist.
     """
     try:
         return joblib.load("ec_models.pkl")
@@ -126,22 +116,19 @@ def fetch_weather(stop: str, target_date: date) -> dict | None:
 
     Für vergangene Daten wird die Open-Meteo Archive API verwendet, für den
     heutigen und zukünftige Tage die Forecast API. Beide Schnittstellen liefern
-    dieselben Variablennamen, sodass die restliche App nicht unterscheiden muss,
-    woher die Daten stammen.
+    dieselben Variablennamen.
 
     Parameter
     ---------
     stop : str
-        Name der Haltestelle, muss in ``STOP_COORDS`` vorhanden sein.
+        Haltestelle aus ``STOP_COORDS``.
     target_date : date
-        Tag, für den die 24 Stundenwerte geladen werden.
+        Gewünschter Tag
 
     Rückgabe
-    --------
+    ---------
     dict | None
-        Wörterbuch ``{stunde: wetterwerte}``. Bei Netzwerkfehlern oder leerer
-        Antwort wird None zurückgegeben; die Merkmalserzeugung nutzt dann
-        sichere Standardwerte.
+        ``{stunde: wetterwerte}`` oder None bei Fehlern/leerer Antwort.
     """
     coords = STOP_COORDS[stop]
     today = date.today()
@@ -179,11 +166,10 @@ def fetch_weather(stop: str, target_date: date) -> dict | None:
 
 def weather_for_hour(weather_by_hour: dict | None, hour: int) -> dict:
     """
-    Gibt den Wetterdatensatz für eine Stunde zurück.
+    Gibt den Wetterdaten für eine Stunde zurück.
 
-    Falls Open-Meteo keine exakt passende Stunde geliefert hat, wird die nächste
-    verfügbare Stunde verwendet. Ohne Wetterdaten wird ein leeres Wörterbuch
-    zurückgegeben; spätere Funktionen ersetzen fehlende Werte durch Defaults.
+    Fehlt die exakte Stunde, wird die nächste verfügbare verwendet.
+    Ohne Wetterdaten wird ein leeres Wörterbuch zurückgegeben.
     """
     if not weather_by_hour:
         return {}
@@ -227,17 +213,13 @@ def fetch_disruptions(dep_date: str) -> list[dict]:
     """
     Lädt aktuelle Fernverkehrs-Störungen aus SBB Open Data.
 
-    Die API liefert keine historischen Ist-Daten, sondern aktuelle bzw. aktive
-    Verkehrsinformationen. Diese Störungen sind ausdrücklich weiterhin Teil der
-    Website. ``dep_date`` wird genutzt, um Meldungen zu bevorzugen, die am
-    gewählten Datum aktiv sind.
+    Bevorzugt Meldungen, die am gewählten Datum aktiv sind.
 
     Rückgabe
-    --------
+    ---------
     list[dict]
-        Normalisierte Meldungen mit ``type``, ``severity`` und ``description``.
-        Bei API-Fehlern wird eine leere Liste zurückgegeben, damit die
-        Vorhersage weiterhin funktioniert.
+        Meldungen mit ``type``, ``severity`` und ``description``.
+        Bei Fehlern wird eine leere Liste zurückgegeben.
     """
     day_start = f"{dep_date}T00:00:00"
     day_end = f"{dep_date}T23:59:59"
@@ -305,6 +287,83 @@ def fetch_disruptions(dep_date: str) -> list[dict]:
 
     return output
 
+# ─── Fahrkarte import ───────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def fetch_connections(origin: str,
+                      destination: str,
+                      dep_date: date,
+                      dep_time: time) -> list[dict]:
+
+    url = "https://transport.opendata.ch/v1/connections"
+
+    try:
+        resp = requests.get(
+            url,
+            params={
+                "from": origin,
+                "to": destination,
+                "date": dep_date.strftime("%Y-%m-%d"),
+                "time": dep_time.strftime("%H:%M"),
+                "limit": 10,
+                "transportations": "train",
+            },
+            timeout=15,
+        )
+
+        resp.raise_for_status()
+
+    except Exception as exc:
+        st.warning(f"Fahrplandaten konnten nicht geladen werden: {exc}")
+        return []
+
+    data = resp.json()
+
+    results = []
+
+    for conn in data.get("connections", []):
+
+        sections = conn.get("sections", [])
+
+        ec_found = False
+        train_name = "Unbekannt"
+
+        for sec in sections:
+
+            journey = sec.get("journey")
+
+            if not journey:
+                continue
+
+            category = journey.get("category", "")
+            number = journey.get("number", "")
+
+            # Nur EC-Züge akzeptieren
+            if category != "EC":
+                continue
+
+            train_name = f"{category} {number}"
+            ec_found = True
+            break
+
+        # Verbindung überspringen wenn kein EC
+        if not ec_found:
+            continue
+
+        departure = conn.get("from", {})
+        arrival = conn.get("to", {})
+
+        results.append({
+            "train": train_name,
+            "departure": departure.get("departure"),
+            "arrival": arrival.get("arrival"),
+            "platform": departure.get("platform"),
+            "duration": conn.get("duration"),
+            "transfers": conn.get("transfers"),
+        })
+
+    return results
+
 
 # ─── FEATURE-AUFBAU ───────────────────────────────────────────────────────────
 
@@ -346,12 +405,10 @@ def build_features(origin: str, destination: str, dep_dt: datetime,
                    w_orig: dict, w_dest: dict,
                    feature_cols: list[str]) -> pd.DataFrame:
     """
-    Baut den vollständigen Merkmalsvektor für eine einzelne Vorhersage.
+    Erstellt den Merkmalsvektor für eine Vorhersage.
 
-    Aus Route, Abfahrtszeit und Wetter entsteht genau eine DataFrame-Zeile. Die
-    Spalten werden am Ende in dieselbe Reihenfolge gebracht, die beim Training
-    gespeichert wurde. Fehlende Spalten werden mit 0 ergänzt, damit ältere
-    Modellpakete mit den früheren Störungsmerkmalen weiterhin robust laden.
+    Die Spaltenreihenfolge entspricht dem Training. Fehlende Spalten
+    werden mit 0 ergänzt.
     """
     orig_idx = STOP_TO_IDX[origin]
     dest_idx = STOP_TO_IDX[destination]
@@ -715,7 +772,7 @@ def main():
     feature_cols = models["feature_cols"]
     threshold = models.get("threshold", 3)
 
-    # ── Routenauswahl ─────────────────────────────────────────────────────────
+# ── Routenauswahl ─────────────────────────────────────────────────────────
     st.subheader("Route")
     col_from, col_arrow, col_to = st.columns([5, 1, 5])
 
@@ -754,10 +811,61 @@ def main():
         )
 
     with col_time:
-        dep_time_input = st.time_input("Abfahrtszeit", value=time(7, 29), step=60)
+        with st.spinner("EC-Züge werden geladen …"):
+            ec_connections = fetch_connections(
+                origin, destination, dep_date, time(5, 0)
+            )
 
+        if ec_connections:
+            def _parse_dep(conn: dict) -> time | None:
+                raw = conn.get("departure")
+                if not raw:
+                    return None
+                try:
+                    return datetime.fromisoformat(raw).time().replace(second=0, microsecond=0)
+                except ValueError:
+                    return None
+
+            seen = set()
+            options = []
+            for conn in ec_connections:
+                t = _parse_dep(conn)
+                if t is not None and t not in seen:
+                    seen.add(t)
+                    options.append((t, conn))
+
+            if options:
+                default_idx = next(
+                    (i for i, (t, _) in enumerate(options) if t >= time(7, 0)),
+                    0,
+                )
+
+                def _label(item: tuple) -> str:
+                    t, conn = item
+                    train = conn.get("train", "EC")
+                    platform = conn.get("platform")
+                    plat_str = f" · Gleis {platform}" if platform else ""
+                    return f"{t.strftime('%H:%M')} Uhr  ({train}{plat_str})"
+
+                selected_item = st.selectbox(
+                    "EC-Abfahrt",
+                    options=options,
+                    index=default_idx,
+                    format_func=_label,
+                    key="ec_dep_time",
+                    help="Nur direkte EC-Verbindungen auf dieser Strecke.",
+                )
+                dep_time_input = selected_item[0]
+            else:
+                st.warning("Keine EC-Abfahrten gefunden – bitte Route oder Datum prüfen.")
+                st.stop()
+        else:
+            st.warning("Fahrplandaten konnten nicht geladen werden.")
+            st.stop()
+
+    # dep_dt erst hier, nachdem dep_time_input gesetzt ist.
     dep_dt = datetime.combine(dep_date, dep_time_input)
-
+    
     # ── Vorhersage-Button ─────────────────────────────────────────────────────
     st.divider()
     predict_clicked = st.button("🔮 Verspätung vorhersagen", type="primary", use_container_width=True)
