@@ -289,60 +289,43 @@ def fetch_disruptions(dep_date: str) -> list[dict]:
 
 # ─── Fahrkarte import ───────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=302)
 def fetch_connections(origin: str,
                       destination: str,
                       dep_date: date,
                       dep_time: time) -> list[dict]:
-    """
-    Lädt alle EC-Abfahrten des gewählten Tages am Ursprungsbahnhof.
-
-    Verwendet /stationboard statt /connections, damit alle Züge des Tages
-    in einem einzigen Request geliefert werden.
-    """
     url = "https://transport.opendata.ch/v1/stationboard"
-    STATION_API_NAMES = {
-        "Zürich HB":        "Zürich HB",
-        "Zürich Flughafen": "Zürich Flughafen",
-        "Winterthur":       "Winterthur",
-        "St. Gallen":       "St. Gallen",
-        }
-    api_origin = STATION_API_NAMES.get(origin, origin)
 
+    # API akzeptiert "Zürich HB" direkt — kein Mapping nötig
     try:
         resp = requests.get(
             url,
             params={
-                "station":  api_origin,
-                "datetime": f"{dep_date.strftime('%Y-%m-%d')} 05:00",
+                "station":  origin,
+                "datetime": f"{dep_date.strftime('%Y-%m-%d')} 05:00",  # Leerzeichen, kein T
                 "limit":    100,
                 "type":     "departure",
             },
             timeout=15,
         )
         resp.raise_for_status()
+        data = resp.json()
     except Exception as exc:
-        st.warning(f"Fahrplandaten konnten nicht geladen werden: {exc}")
+        return []   # st.warning hier entfernt — darf nicht in cache_data stehen
+
+    stationboard = data.get("stationboard", [])
+    if not stationboard:
         return []
 
     results = []
     dest_lower = destination.lower()
 
-    for entry in resp.json().get("stationboard", []):
-        # Nur EC-Züge
+    for entry in stationboard:
         if entry.get("category") != "EC":
             continue
 
-        # Richtung prüfen
         to_station = (entry.get("to") or "").lower()
-        pass_list  = entry.get("passList") or []
-
-
-        destination_on_route = (
-            dest_lower in to_station
-            or not to_station
-            )
-        
+        destination_on_route = (dest_lower in to_station or not to_station)
 
         if not destination_on_route:
             continue
@@ -362,7 +345,6 @@ def fetch_connections(origin: str,
         })
 
     return results
-
 
 # ─── FEATURE-AUFBAU ───────────────────────────────────────────────────────────
 
