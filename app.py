@@ -301,12 +301,19 @@ def fetch_connections(origin: str,
     in einem einzigen Request geliefert werden.
     """
     url = "https://transport.opendata.ch/v1/stationboard"
+    STATION_API_NAMES = {
+        "Zürich HB":        "Zürich HB",
+        "Zürich Flughafen": "Zürich Flughafen",
+        "Winterthur":       "Winterthur",
+        "St. Gallen":       "St. Gallen",
+        }
+    api_origin = STATION_API_NAMES.get(origin, origin)
 
     try:
         resp = requests.get(
             url,
             params={
-                "station":  origin,
+                "station":  api_origin,
                 "datetime": f"{dep_date.strftime('%Y-%m-%d')} 05:00",
                 "limit":    100,
                 "type":     "departure",
