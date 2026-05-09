@@ -295,16 +295,21 @@ def fetch_disruptions(dep_date: str) -> list[dict]:
 # Richtung vorwärts:  Zürich HB → Zürich Flughafen → Winterthur → St. Gallen
 # Richtung rückwärts: St. Gallen → Winterthur → Zürich Flughafen → Zürich HB
 
+
 _EC_SCHEDULE: dict[str, dict[str, list[tuple[int,int]]]] = {
     "forward": {
+        # Zürich HB ab xx:33, 8 Züge täglich (05:33–19:33)
+        # Frühzug 05:33 entfällt Sa+So → Index 0
         "Zürich HB":        [(5,33),(7,33),(9,33),(11,33),(13,33),(15,33),(17,33),(19,33)],
         "Zürich Flughafen": [(5,42),(7,42),(9,42),(11,42),(13,42),(15,42),(17,42),(19,42)],
         "Winterthur":       [(5,57),(7,57),(9,57),(11,57),(13,57),(15,57),(17,57),(19,57)],
     },
     "backward": {
-        "St. Gallen":       [(6,29),(8,29),(10,29),(12,29),(14,29),(16,29),(18,29),(20,29)],
-        "Winterthur":       [(7, 1),(9, 1),(11, 1),(13, 1),(15, 1),(17, 1),(19, 1),(21, 1)],
-        "Zürich Flughafen": [(7,16),(9,16),(11,16),(13,16),(15,16),(17,16),(19,16),(21,16)],
+        # St. Gallen ab xx:29, 8 Züge täglich (06:29–20:29)
+        # Frühzug 06:29 entfällt Sa+So → Index 0
+        "St. Gallen":       [(6,29),(7,29),(9,29),(11,29),(13,29),(15,29),(17,29),(20,29)],
+        "Winterthur":       [(7, 1),(8, 1),(10, 1),(12, 1),(14, 1),(16, 1),(18, 1),(21, 1)],
+        "Zürich Flughafen": [(7,16),(8,16),(10,16),(12,16),(14,16),(16,16),(18,16),(21,16)],
     },
 }
 
