@@ -1,43 +1,17 @@
 """
 EC-Verspätungsprediktor — Trainingsskript
-==========================================
 
-Dieses Skript trainiert zwei Machine-Learning-Modelle (Random Forest) auf
-historischen Echtzeitdaten der SBB, um Verspätungen von EC-Zügen auf der
-Strecke Zürich HB ↔ St. Gallen vorherzusagen.
+Trainiert zwei Random-Forest-Modelle auf SBB Ist-Daten für die Strecke
+Zürich HB ↔ St. Gallen:
+  1. Klassifikator: Wird der Zug ≥ 3 min verspätet? (Ja/Nein)
+  2. Regressor:     Wie viele Minuten Verspätung sind zu erwarten?
 
-Datenquellen
-------------
-• Ist-Daten (Verspätungen):
-    Täglich veröffentlichte CSV-Dateien von opentransportdata.swiss.
-    Diese enthalten für jeden Schweizer Zughalt die geplante und die
-    tatsächliche Ankunfts- bzw. Abfahrtszeit.
-    → Müssen manuell heruntergeladen und im Ordner ``istdaten_cache/``
-      abgelegt werden (siehe Abschnitt "Ist-Daten beziehen" weiter unten).
-
-• Wetterdaten:
-    Stündliche historische Wetterdaten von der Open-Meteo Archive API.
-    Kostenlos, kein API-Schlüssel erforderlich.
-
-Ist-Daten beziehen
-------------------
-1. Registrieren auf https://opentransportdata.swiss (kostenlos)
-2. Datensatz "Ist-Daten" herunterladen:
-   https://opentransportdata.swiss/de/dataset/istdaten
-3. Die heruntergeladenen CSV- oder GZ-Dateien in den Ordner
-   ``istdaten_cache/`` ablegen (wird automatisch erstellt).
-   Dateiname sollte das Datum enthalten, z. B. ``2024-03-15_istdaten.csv``.
-
-Verwendung
-----------
+Verwendung:
     python ec_delay_predictor.py --start 2024-01-01 --end 2024-12-31
 
-Ausgabe
--------
-    ec_models.pkl          — Trainierte Modelle (Klassifikator + Regressor)
-    ec_delay_dataset.csv   — Vollständige Merkmalsmatrix, die zum Training
-                             verwendet wurde (nützlich zur Analyse)
-
+Ist-Daten: https://opentransportdata.swiss/de/dataset/istdaten
+           → CSV/GZ-Dateien in istdaten_cache/ ablegen.
+Ausgabe:   ec_models.pkl, ec_delay_dataset.csv
 Modellarchitektur
 -----------------
 Es werden zwei Modelle trainiert:
@@ -66,10 +40,6 @@ nicht als Modellinput.
 Abgedeckte Haltestellen (beide Richtungen)
 ------------------------------------------
   Zürich HB → Zürich Flughafen → Winterthur → St. Gallen  (und umgekehrt)
-
-Das Modell erzeugt Trainingsdatensätze für alle möglichen
-Ursprungs-Ziel-Paare auf dieser Strecke, z. B.:
-  Zürich HB → St. Gallen, Zürich Flughafen → Winterthur, St. Gallen → Zürich HB, …
 """
 
 import argparse
@@ -95,16 +65,9 @@ warnings.filterwarnings("ignore")
 # KONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Haltestellen in der Reihenfolge Zürich → St. Gallen.
-# Der Index jeder Haltestelle wird als Merkmal verwendet (Position auf der Strecke).
 STOPS_ORDERED = ["Zürich HB", "Zürich Flughafen", "Winterthur", "St. Gallen"]
-
-# Wörterbuch: Haltestellenname → numerischer Index (0 = Zürich HB, 3 = St. Gallen)
 STOP_TO_IDX = {s: i for i, s in enumerate(STOPS_ORDERED)}
 
-# GPS-Koordinaten jeder Haltestelle für die Wetterabfrage bei Open-Meteo.
-# Open-Meteo gibt Wetter für einen geografischen Punkt zurück — daher brauchen
-# wir die genaue Position jedes Bahnhofs.
 STOP_COORDS = {
     "Zürich HB":         {"lat": 47.3779, "lon": 8.5403},
     "Zürich Flughafen": {"lat": 47.4504, "lon": 8.5624},
@@ -114,22 +77,14 @@ STOP_COORDS = {
 
 # Open-Meteo Archive API — stündliche historische Wetterdaten, kostenlos
 OPENMETEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
-
-# Lokaler Cache-Ordner für die Ist-Daten-CSV-Dateien
 ISTDATEN_CACHE_DIR = Path("istdaten_cache")
-
-# Ausgabepfad für die trainierten Modelle
 MODEL_PATH = Path("ec_models.pkl")
 
-# SBB-Definition: Ein Zug gilt als verspätet, wenn er ≥ 3 Minuten zu spät ankommt.
+# SBB-Definition: Zug gilt als verspätet ab ≥ 3 Minuten Ankunftsverspätung
 DELAY_THRESHOLD_MIN = 3
 
-# WMO-Wettercodes, die als «schwerwiegendes Wetter» gelten
-# (Nebel, Vereisung, Schnee, Gewitter). Wird intern für Diagnosen verwendet.
 SEVERE_WEATHER_CODES = {45, 48, 66, 67, 71, 73, 75, 77, 85, 86, 95, 96, 99}
 
-# Wettervariablen, die von Open-Meteo abgerufen werden.
-# Jede Variable wird für jede Stunde des abgefragten Tages zurückgegeben.
 WEATHER_VARIABLES = [
     "temperature_2m",        # Lufttemperatur in 2 m Höhe [°C]
     "precipitation",         # Niederschlag [mm]
@@ -171,34 +126,11 @@ _IST_COLS = [
 # ABSCHNITT 1 — IST-DATEN: LESEN AUS LOKALEM CACHE
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Die Ist-Daten enthalten für jeden Schweizer Bahnhalt die geplante und die
-# tatsächliche Zeit. Aus der Differenz berechnen wir die Verspätung.
-#
-# Struktur einer Ist-Daten-Datei (vereinfacht):
-#   BETRIEBSTAG ; FAHRT_BEZEICHNER ; LINIEN_TEXT ; HALTESTELLEN_NAME ;
-#   ABFAHRTSZEIT ; AB_PROGNOSE ; ANKUNFTSZEIT ; AN_PROGNOSE ; …
-#
-# Wichtig: PRODUKT_ID ist in diesen Dateien "Zug" oder "Bus" — NICHT "EC".
-# EC-Züge identifizieren wir ausschliesslich über LINIEN_TEXT = "EC".
+# Wichtig: PRODUKT_ID ist in diesen Dateien "Zug" — NICHT "EC".
+# EC-Züge werden ausschliesslich über LINIEN_TEXT = "EC" identifiziert.
 
 def _open_csv(path: Path):
-    """
-    Öffnet eine CSV-Datei — entweder direkt oder als GZ-komprimierte Datei.
-
-    Ist-Daten werden oft als .gz (gzip) bereitgestellt, um Speicherplatz zu sparen.
-    Diese Funktion erkennt das Format anhand der Dateiendung und gibt ein
-    entsprechendes Datei-Handle zurück.
-
-    Parameter
-    ---------
-    path : Path
-        Pfad zur Datei (.csv oder .gz).
-
-    Rückgabe
-    --------
-    file-like object
-        Geöffnetes Text-Handle, das wie eine normale Datei gelesen werden kann.
-    """
+    """Öffnet eine Ist-Daten-Datei direkt (.csv) oder als GZ-Archiv (.gz)."""
     if path.suffix == ".gz":
         return gzip.open(path, "rt", encoding="utf-8-sig")
     return open(path, encoding="utf-8-sig")
@@ -207,29 +139,8 @@ def _open_csv(path: Path):
 def _normalize_date(date_str: str) -> str:
     """
     Normalisiert ein Datum in das ISO-Format YYYY-MM-DD.
-
-    Die Ist-Daten verwenden das Schweizer Datumsformat DD.MM.YYYY,
-    während Python-Funktionen wie ``datetime.strptime`` standardmässig
-    YYYY-MM-DD erwarten. Diese Hilfsfunktion konvertiert alle gängigen
-    Formate in ein einheitliches Format.
-
-    Unterstützte Eingabeformate:
-      • YYYY-MM-DD  (ISO, z. B. "2024-03-15")
-      • DD.MM.YYYY  (Schweizer Format, z. B. "15.03.2024")
-      • DD/MM/YYYY  (europäisch mit Schrägstrich, z. B. "15/03/2024")
-      • YYYYMMDD    (kompakt, z. B. "20240315")
-
-    Parameter
-    ---------
-    date_str : str
-        Datumszeichenkette in einem der oben genannten Formate.
-
-    Rückgabe
-    --------
-    str
-        Datum im Format YYYY-MM-DD, oder die Eingabe unverändert, wenn
-        kein Format erkannt wurde (damit Folgefunktionen selbst fehler-
-        behandeln können).
+    Unterstützt: DD.MM.YYYY, DD/MM/YYYY, YYYYMMDD und ISO-Format.
+    Unbekannte Formate werden unverändert zurückgegeben.
     """
     for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y%m%d"):
         try:
@@ -242,26 +153,9 @@ def _normalize_date(date_str: str) -> str:
 
 def _parse_ist_time(date_str: str, cell) -> datetime | None:
     """
-    Parst eine Zeit-Zelle aus den Ist-Daten in ein Python-datetime-Objekt.
-
-    Die Zeitfelder in den Ist-Daten können in zwei Formen auftauchen:
-      1. Vollständiger Zeitstempel: "15.03.2024 08:32:00"
-      2. Nur Zeit:                  "08:32:00" (kombiniert mit dem Betriebsdatum)
-
-    Diese Funktion versucht beide Varianten und gibt None zurück, wenn
-    keine Interpretation möglich ist (z. B. bei leeren oder ungültigen Zellen).
-
-    Parameter
-    ---------
-    date_str : str
-        Betriebsdatum als YYYY-MM-DD (bereits normalisiert).
-    cell : beliebig
-        Zellenwert aus dem DataFrame (str, float, NaN, …).
-
-    Rückgabe
-    --------
-    datetime | None
-        Geparste Zeit als datetime-Objekt, oder None bei ungültiger Eingabe.
+    Parst eine Zeitzelle aus den Ist-Daten in ein datetime-Objekt.
+    Variante 1: vollständiger Zeitstempel ("15.03.2024 08:32:00")
+    Variante 2: nur Uhrzeit ("08:32:00") — wird mit Betriebsdatum kombiniert.
     """
     if not cell or pd.isna(cell):
         return None
@@ -291,31 +185,9 @@ def _parse_ist_time(date_str: str, cell) -> datetime | None:
 
 def parse_istdaten_file(path: Path) -> pd.DataFrame:
     """
-    Liest eine Ist-Daten-CSV-Datei und extrahiert alle EC-Halte auf der Strecke.
-
-    Ablauf:
-      1. Trennzeichen erkennen (Semikolon oder Komma)
-      2. CSV einlesen, nur relevante Spalten laden
-      3. Auf EC-Züge filtern (LINIEN_TEXT beginnt mit "EC")
-      4. Auf Haltestellen der Strecke filtern
-         (Zürich HB → Zürich Flughafen → Winterthur → St. Gallen)
-      5. Zeilen in strukturierte Datensätze umwandeln
-
-    Warum kein PRODUKT_ID-Filter?
-    In den Ist-Daten der SBB steht in PRODUKT_ID "Zug" (nicht "EC").
-    Der Produkttyp "EC" erscheint nur in LINIEN_TEXT. Daher filtern wir
-    ausschliesslich über LINIEN_TEXT.
-
-    Parameter
-    ---------
-    path : Path
-        Pfad zur Ist-Daten-Datei.
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        DataFrame mit einer Zeile pro EC-Halt auf der Strecke.
-        Leerer DataFrame, wenn keine relevanten Daten gefunden wurden.
+    Liest eine Ist-Daten-CSV und extrahiert alle EC-Halte auf der Strecke.
+    Filter: LINIEN_TEXT beginnt mit "EC" (nicht PRODUKT_ID, da SBB dort
+    "Zug" statt "EC" einträgt). Trennzeichen wird automatisch erkannt.
     """
     # ── Trennzeichen automatisch erkennen ─────────────────────────────────────
     try:
@@ -327,8 +199,8 @@ def parse_istdaten_file(path: Path) -> pd.DataFrame:
             df = pd.read_csv(
                 fh,
                 sep=sep,
-                usecols=lambda c: c.upper().strip() in _IST_COLS,  # nur benötigte Spalten
-                dtype=str,         # alles als Text einlesen, damit keine Typen-Fehler auftreten
+                usecols=lambda c: c.upper().strip() in _IST_COLS,
+                dtype=str,
                 low_memory=False,
             )
     except Exception as exc:
@@ -338,21 +210,20 @@ def parse_istdaten_file(path: Path) -> pd.DataFrame:
     # Spaltennamen vereinheitlichen (Grossschreibung, keine Leerzeichen)
     df.columns = [c.upper().strip() for c in df.columns]
 
-    # ── Auf EC-Züge filtern ────────────────────────────────────────────────────
+# ── Auf EC-Züge filtern ────────────────────────────────────────────────────
     if "LINIEN_TEXT" not in df.columns:
         print(f"    ⚠️  {path.name}: Spalte LINIEN_TEXT fehlt — Datei wird übersprungen.")
         return pd.DataFrame()
 
     ec_mask = df["LINIEN_TEXT"].str.strip().str.upper().str.startswith("EC", na=False)
     df = df[ec_mask]
-
+    
     # ── Auf Haltestellen der Strecke filtern ──────────────────────────────────
     if "HALTESTELLEN_NAME" in df.columns:
         df = df[df["HALTESTELLEN_NAME"].isin(set(STOPS_ORDERED))]
 
     # ── Diagnose, wenn keine passenden Zeilen gefunden wurden ─────────────────
     if df.empty:
-        # Kurzdiagnose: Was steht überhaupt in dieser Datei?
         with _open_csv(path) as fh:
             diag = pd.read_csv(fh, sep=sep, dtype=str, low_memory=False, nrows=5000)
         diag.columns = [c.upper().strip() for c in diag.columns]
@@ -411,38 +282,10 @@ def build_trip_delays(paths: list[Path]) -> pd.DataFrame:
     """
     Konvertiert Ist-Daten-Dateien in Trainingsdatensätze.
 
-    Für jede Fahrt (identifiziert durch FAHRT_BEZEICHNER) werden alle
-    gültigen Ursprungs-Ziel-Paare auf der Strecke erzeugt.
-
-    Beispiel für eine Fahrt Zürich HB → St. Gallen mit 4 Halten:
-      Zürich HB → Zürich Flughafen, Zürich HB → Winterthur,
-      Zürich HB → St. Gallen, Zürich Flughafen → Winterthur,
-      Zürich Flughafen → St. Gallen, Winterthur → St. Gallen
-      → 6 Datensätze (C(4,2) = 6 Kombinationen)
-
-    Warum Gruppierung nach FAHRT_BEZEICHNER (nicht LINIEN_TEXT)?
-    LINIEN_TEXT ist für alle EC-Züge gleich ("EC"), würde also alle Fahrten
-    eines Tages zu einer einzigen Gruppe verschmelzen. FAHRT_BEZEICHNER
-    ist pro Fahrt eindeutig.
-
-    Verspätungsberechnung:
-      Verspätung [min] = (tatsächliche Ankunft − geplante Ankunft) in Minuten.
-      Negative Werte (Frühankünfte) werden auf 0 gesetzt.
-
-    Filterkriterien (Fahrt/Halt wird verworfen, wenn):
-      • Ankunftszeit fehlt (kein Eintrag)
-      • Status nicht "REAL" oder "PROGNOSE" (z. B. "UNBEKANNT")
-      • Fahrt oder Halt ist ausgefallen (FAELLT_AUS_TF = 1)
-
-    Parameter
-    ---------
-    paths : list[Path]
-        Liste der zu parsenden Ist-Daten-Dateien.
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        Ein Datensatz pro (Fahrt × Ursprung-Ziel-Paar) mit Verspätung.
+    Pro Fahrt (FAHRT_BEZEICHNER) werden alle Ursprungs-Ziel-Paare erzeugt
+    (4 Halte → 6 Segmente). Verspätung = tatsächliche − geplante Ankunft in
+    Minuten, negative Werte (Frühankünfte) auf 0 gesetzt.
+    Verworfen werden: fehlende Zeiten, Status UNBEKANNT, ausgefallene Fahrten.
     """
     # ── Alle Dateien einlesen und zusammenführen ───────────────────────────────
     frames = []
@@ -551,23 +394,8 @@ def build_trip_delays(paths: list[Path]) -> pd.DataFrame:
 
 
 def _date_from_filename(path: Path) -> date | None:
-    """
-    Versucht, ein Datum (YYYY-MM-DD) aus dem Dateinamen zu extrahieren.
-
-    Ist-Daten-Dateien enthalten typischerweise das Datum im Dateinamen,
-    z. B. ``2024-03-15_istdaten.csv`` oder ``istdaten_20240315.gz``.
-    Diese Funktion probiert mehrere gängige Formate aus.
-
-    Parameter
-    ---------
-    path : Path
-        Dateipfad.
-
-    Rückgabe
-    --------
-    date | None
-        Extrahiertes Datum oder None, wenn kein Datum erkannt wurde.
-    """
+    """Extrahiert ein Datum aus dem Dateinamen (z. B. 2024-03-15_istdaten.csv).
+    Gibt None zurück, wenn kein Datum erkannt wurde."""
     name = path.stem.replace(".csv", "")   # Doppelte Endung ".csv.gz" berücksichtigen
     for fmt in ("%Y-%m-%d", "%Y%m%d", "%d.%m.%Y"):
         # Dateinamen anhand verschiedener Trennzeichen zerlegen und jeden Teil prüfen
@@ -582,26 +410,8 @@ def _date_from_filename(path: Path) -> date | None:
 def _find_cached_files(start_date: str | None = None,
                        end_date:   str | None = None) -> list[Path]:
     """
-    Gibt alle CSV/GZ-Dateien aus dem Cache-Ordner zurück, die im angegebenen
-    Datumsbereich liegen.
-
-    Filterlogik:
-      • Dateien, aus deren Namen ein Datum extrahiert werden kann:
-        → Werden nur eingeschlossen, wenn das Datum im Bereich [start, end] liegt.
-      • Dateien ohne erkennbares Datum im Namen:
-        → Werden immer eingeschlossen (manuell abgelegte Dateien).
-
-    Parameter
-    ---------
-    start_date : str | None
-        Startdatum als YYYY-MM-DD.
-    end_date : str | None
-        Enddatum als YYYY-MM-DD.
-
-    Rückgabe
-    --------
-    list[Path]
-        Sortierte Liste der passenden Dateipfade.
+    Gibt alle CSV/GZ-Dateien aus dem Cache im angegebenen Datumsbereich zurück.
+    Dateien ohne erkennbares Datum im Namen werden immer eingeschlossen.
     """
     if not ISTDATEN_CACHE_DIR.exists():
         return []
@@ -630,30 +440,7 @@ def _find_cached_files(start_date: str | None = None,
 
 
 def load_real_delays(start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    Lädt Ist-Daten aus dem lokalen Cache und gibt die berechneten
-    Verspätungs-Datensätze zurück.
-
-    Diese Funktion ist der Einstiegspunkt für den Datenladevorgang.
-    Sie sucht im Cache-Ordner ``istdaten_cache/`` nach CSV-Dateien im
-    angegebenen Datumsbereich und verarbeitet diese.
-
-    Falls keine Dateien im Cache vorhanden sind, gibt die Funktion einen
-    leeren DataFrame zurück und das Skript bricht mit einem erklärenden
-    Fehler ab.
-
-    Parameter
-    ---------
-    start_date : str
-        Startdatum als YYYY-MM-DD.
-    end_date : str
-        Enddatum als YYYY-MM-DD.
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        Datensatz mit einer Zeile pro (Fahrt × Segment) mit Verspätung.
-    """
+    """Einstiegspunkt: Ist-Daten aus Cache laden und Verspätungsdatensätze zurückgeben."""
     cached = _find_cached_files(start_date, end_date)
     if not cached:
         return pd.DataFrame()
@@ -667,29 +454,10 @@ def load_real_delays(start_date: str, end_date: str) -> pd.DataFrame:
 # Für jede Trainingsstichprobe werden die Wetterbedingungen zum Zeitpunkt der
 # Abfahrt (am Ursprungsbahnhof) und bei der Ankunft (am Zielbahnhof) benötigt.
 # Die Open-Meteo Archive API liefert stündliche Historik für beliebige Koordinaten.
-
 def fetch_weather_archive(stop: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Lädt stündliche Wetterdaten für eine Haltestelle über einen Zeitraum.
-
-    Die Open-Meteo Archive API gibt für jeden Tag des Zeitraums 24 Stundenwerte
-    zurück. Wir indexieren den DataFrame nach (Datum, Stunde), um später schnell
-    den passenden Wetterwert für eine bestimmte Abfahrtszeit nachzuschlagen.
-
-    Parameter
-    ---------
-    stop : str
-        Name der Haltestelle (muss in STOP_COORDS vorhanden sein).
-    start_date : str
-        Startdatum als YYYY-MM-DD.
-    end_date : str
-        Enddatum als YYYY-MM-DD.
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        Index: (date, hour) — MultiIndex aus Python-date und Integer-Stunde.
-        Spalten: alle Einträge aus WEATHER_VARIABLES.
+    Stündliche historische Wetterdaten für eine Haltestelle von Open-Meteo.
+    Rückgabe: DataFrame mit (date, hour) für schnellen Lookup.
     """
     coords = STOP_COORDS[stop]
     resp   = requests.get(OPENMETEO_ARCHIVE, params={
@@ -710,25 +478,7 @@ def fetch_weather_archive(stop: str, start_date: str, end_date: str) -> pd.DataF
 
 
 def weather_at(df: pd.DataFrame, dt: datetime) -> dict | None:
-    """
-    Gibt den Wetterdatensatz für eine bestimmte Stunde zurück.
-
-    Sucht im nach (Datum, Stunde) indizierten DataFrame nach dem passenden
-    Eintrag. Falls keine exakte Übereinstimmung gefunden wird, gibt die
-    Funktion None zurück (der Aufrufer setzt dann fehlende Wetterwerte auf 0).
-
-    Parameter
-    ---------
-    df : pd.DataFrame
-        Wetter-DataFrame mit (date, hour)-MultiIndex.
-    dt : datetime
-        Zeitpunkt, für den das Wetter gesucht wird.
-
-    Rückgabe
-    --------
-    dict | None
-        Wörterbuch {Variablenname: Wert} oder None, wenn kein Eintrag vorhanden.
-    """
+    """Wetterdatensatz für eine bestimmte Stunde; None wenn kein Eintrag vorhanden."""
     key = (dt.date(), dt.hour)
     return df.loc[key].to_dict() if key in df.index else None
 
@@ -737,25 +487,9 @@ def weather_at(df: pd.DataFrame, dt: datetime) -> dict | None:
 # ABSCHNITT 3 — FEATURE ENGINEERING
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Merkmalsbildung (Feature Engineering) bezeichnet die Transformation von Rohdaten in die
-# numerischen Eingabevektoren, die das ML-Modell erwartet.
-#
-# Unser Merkmalsvektor hat 42 Dimensionen:
-#
-#   Strecke (4):     direction, origin_stop_idx, destination_stop_idx, segment_length
-#   Zeit (7):        dep_hour, day_of_week, month, week_of_year,
-#                    is_weekend, is_rush_hour, season
-#   Wetter Ursprung (11): orig_temp, orig_precip, orig_snow, orig_snow_depth,
-#                          orig_wind, orig_gusts, orig_visibility,
-#                          orig_cloud, orig_humidity, orig_pressure, orig_weather_code
-#   Wetter Ziel (11):     dest_* (dieselben 11 Variablen)
-#   Abgeleitet (9):  bad_weather_score, extreme_cold, extreme_heat,
-#                    any_snow, heavy_rain, low_visibility,
-#                    precip_diff, temp_diff, wind_diff
+# 42 Merkmale: Strecke (4), Zeit (7), Wetter Ursprung (11), Wetter Ziel (11),
+# Abgeleitete Wettermerkmale (9). Reihenfolge muss mit der App übereinstimmen.
 
-# Vollständige Liste aller Merkmalsnamen in definierter Reihenfolge.
-# Diese Liste wird im gespeicherten Modell mitgeführt, damit die
-# Streamlit-App dieselbe Reihenfolge für die Inferenz verwenden kann.
 FEATURE_COLS = [
     # ── Streckenmerkmale ──────────────────────────────────────────────────────
     "direction",              # 0 = Zürich→St.Gallen, 1 = St.Gallen→Zürich
@@ -808,26 +542,7 @@ FEATURE_COLS = [
 
 
 def _wv(w: dict | None, key: str, default=np.nan):
-    """
-    Liest einen Wert aus einem Wetter-Wörterbuch mit Fallback.
-
-    Gibt ``default`` zurück, wenn das Wörterbuch None ist, der Schlüssel
-    fehlt oder der Wert None ist. Verhindert so NaN-Werte in den Merkmalen.
-
-    Parameter
-    ---------
-    w : dict | None
-        Wetter-Wörterbuch (kann None sein, wenn kein Wetter verfügbar war).
-    key : str
-        Name der gesuchten Wettervariable.
-    default : beliebig
-        Fallback-Wert (Standard: NaN, kann bei bekannten Nullwerten wie
-        Niederschlag auf 0 gesetzt werden).
-
-    Rückgabe
-    --------
-    float oder der default-Wert.
-    """
+    """Wetterwert mit Fallback; gibt default zurück wenn w=None oder Wert fehlt."""
     if w is None:
         return default
     v = w.get(key)
@@ -835,24 +550,7 @@ def _wv(w: dict | None, key: str, default=np.nan):
 
 
 def weather_record(w: dict | None, prefix: str) -> dict:
-    """
-    Konvertiert ein Wetter-Wörterbuch in benannte Merkmalseinträge.
-
-    Fügt dem Spaltennamen ein Präfix hinzu ("orig_" oder "dest_"), damit
-    Ursprungs- und Zielwetter im Merkmalsvektor unterschieden werden können.
-
-    Parameter
-    ---------
-    w : dict | None
-        Wetter-Wörterbuch mit Open-Meteo-Variablennamen als Schlüssel.
-    prefix : str
-        Präfix für die Merkmalsnamen, z. B. "orig" oder "dest".
-
-    Rückgabe
-    --------
-    dict
-        Merkmals-Wörterbuch mit 11 Einträgen (prefix_temp, prefix_precip, …).
-    """
+    """Wandelt ein Open-Meteo-Dict in 11 benannte Merkmale mit Präfix "orig_" oder "dest_" um."""
     return {
         f"{prefix}_temp":         _wv(w, "temperature_2m"),
         f"{prefix}_precip":       _wv(w, "precipitation",     0),   # Kein Regen = 0, nicht NaN
@@ -870,60 +568,15 @@ def weather_record(w: dict | None, prefix: str) -> dict:
 
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Berechnet abgeleitete Merkmale aus den Basismerkmalen.
+    Berechnet 9 abgeleitete Merkmale aus den Basiswetterwerten.
 
-    Diese Merkmale werden nicht direkt aus den Rohdaten übernommen, sondern
-    aus bestehenden Merkmalen kombiniert. Sie helfen dem Modell, nichtlineare
-    Zusammenhänge einfacher zu erkennen.
-
-    Berechnete Merkmale:
-    --------------------
-    bad_weather_score : float (0–4)
-        Kombinierter Schlechtwetter-Index. Gewichtete Summe aus:
-          • Schneefall (Gewicht 1.5 — grösster Einfluss auf den Bahnbetrieb)
-          • Niederschlag (Gewicht 1.0)
-          • Windböen (Gewicht 0.8)
-          • Sichtverlust (Gewicht 0.7)
-        Jede Komponente wird auf [0, 1] normiert, bevor sie gewichtet wird.
-
-    extreme_cold : int (0/1)
-        1, wenn die Temperatur unter −5 °C liegt. Bei dieser Temperatur
-        können Weichen einfrieren und zu Verspätungen führen.
-
-    extreme_heat : int (0/1)
-        1, wenn die Temperatur über 33 °C liegt. Starke Hitze kann Schienen
-        verbiegen (Hitzebeulen).
-
-    any_snow : int (0/1)
-        1, wenn überhaupt Schneefall gemeldet wurde (> 0 cm).
-
-    heavy_rain : int (0/1)
-        1 bei starkem Regen (> 8 mm). Kann Erdrutsche und Überflutungen
-        verursachen.
-
-    low_visibility : int (0/1)
-        1, wenn die Sicht unter 1000 m liegt (dichter Nebel oder Schneefall).
-
-    precip_diff : float
-        Absoluter Unterschied im Niederschlag zwischen Ziel- und
-        Ursprungsbahnhof. Hohe Werte zeigen ungleichmässige Wetterverhältnisse
-        entlang der Strecke an.
-
-    temp_diff : float
-        Absoluter Temperaturunterschied zwischen Ziel und Ursprung.
-
-    wind_diff : float
-        Absoluter Windunterschied zwischen Ziel und Ursprung.
-
-    Parameter
-    ---------
-    df : pd.DataFrame
-        DataFrame mit Basismerkmalen (aus build_dataset).
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        Erweiterter DataFrame mit 9 zusätzlichen Spalten.
+    bad_weather_score (0–4): gewichtete Summe aus Schnee (×1.5), Regen (×1.0),
+        Böen (×0.8), Sichtverlust (×0.7) — je auf [0,1] normiert.
+    extreme_cold: Temp < −5 °C (Weichen können einfrieren)
+    extreme_heat: Temp > 33 °C (Risiko von Gleisverbiegungen/Hitzebeulen)
+    heavy_rain:   Niederschlag > 8 mm (Erdrutsch-/Überflutungsrisiko)
+    low_visibility: Sicht < 1000 m (dichter Nebel oder Schneetreiben)
+    precip_diff / temp_diff / wind_diff: Wettergradienten entlang der Strecke
     """
     df = df.copy()
 
@@ -956,33 +609,11 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_dataset(start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Erstellt die vollständige Merkmalsmatrix für das Modelltraining.
+    Vollständige Merkmalsmatrix aus Ist-Daten und Wetterdaten erstellen.
 
-    Ablauf:
-      1. Ist-Daten laden (Verspätungsrechnung)
-      2. Wetterdaten für alle 4 Haltestellen laden
-      3. Für jeden Datensatz (Fahrt × Segment) die passenden
-         Wetterwerte nachschlagen und alle Merkmale zusammenführen
-
-    Wetter-Lookup:
-      • Abfahrtswetter: Wetter am Ursprungsbahnhof zur Abfahrtszeit
-      • Ankunftswetter: Wetter am Zielbahnhof zur (approximierten) Ankunftszeit
-        Die Ankunftszeit wird mit +1h06min zur Abfahrtszeit approximiert
-        (Gesamtreisedauer Zürich HB → St. Gallen; für kürzere Segmente ist
-        dies eine Überschätzung, aber der Fehler ist gering, da wir nur die
-        Stunde verwenden).
-
-    Parameter
-    ---------
-    start_date : str
-        Startdatum als YYYY-MM-DD.
-    end_date : str
-        Enddatum als YYYY-MM-DD.
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        Merkmalsmatrix mit Zielspalten ``arr_delay_min`` und ``is_delayed``.
+    Ankunftswetter wird mit Abfahrt + 1h06min approximiert (Gesamtfahrzeit
+    ZH HB → SG); für kürzere Segmente leicht überschätzt, der Stunden-Index
+    bleibt aber korrekt.
     """
     print(f"\n📅  Datensatz aufbauen  {start_date} → {end_date}")
 
@@ -1065,45 +696,21 @@ def build_dataset(start_date: str, end_date: str) -> pd.DataFrame:
 
 def train_and_save(df: pd.DataFrame) -> None:
     """
-    Trainiert Klassifikator und Regressor auf dem Merkmalsdatensatz und
-    speichert die Modelle.
+    Klassifikator und Regressor trainieren und als ec_models.pkl speichern.
 
-    Klassifikator — RandomForestClassifier
-    ---------------------------------------
-    Zielgrösse: ``is_delayed`` (1 = verspätet ≥ 3 min, 0 = pünktlich)
-    Hyperparameter:
-      • n_estimators=300   — 300 Entscheidungsbäume im Wald
-      • max_depth=14       — Maximale Baumtiefe (verhindert Overfitting)
-      • min_samples_leaf=5 — Mindestens 5 Proben in jedem Blattknoten
-      • class_weight='balanced' — Gleicht unbalancierte Klassen aus:
-        Falls nur 20% der Züge verspätet sind, würde ein naiver Klassifikator
-        immer "pünktlich" vorhersagen. Dieser Parameter gewichtet die
-        verspäteten Fälle stärker.
+    Hyperparameter-Begründung:
+      n_estimators=300:   Mehr Bäume stabilisieren die Vorhersage; ab ~300
+                          sind die Verbesserungen marginal bei vertretbarem Rechenaufwand.
+      max_depth=14:       Verhindert Overfitting — zu tiefe Bäume lernen Rauschen,
+                          zu flache verpassen komplexe Muster.
+      min_samples_leaf=5: Mindestgrösse jedes Blattknotens, verhindert das
+                          Auswendiglernen einzelner Ausreisser.
+      class_weight='balanced': Gleicht unbalancierte Klassen aus — da verspätete
+                          Züge die Minderheit sind, würde das Modell ohne diesen
+                          Parameter fast immer "pünktlich" vorhersagen.
 
-    Regressor — RandomForestRegressor
-    -----------------------------------
-    Zielgrösse: ``arr_delay_min`` (Verspätung in Minuten, ≥ 0)
-    Gleiche Hyperparameter wie der Klassifikator (ohne class_weight).
-
-    Train-Test-Split:
-      80% Trainingsdaten, 20% Testdaten.
-      Beim Klassifikator wird stratifiziert gesplittet, damit beide Splits
-      dieselbe Klassenverteilung haben.
-
-    Gespeicherte Artefakte (in ec_models.pkl):
-      clf          — Trainierter Klassifikator
-      reg          — Trainierter Regressor
-      feature_cols — Geordnete Liste der Merkmalsnamen
-      stops        — Liste der Haltestellen in Reihenfolge
-      stop_to_idx  — Wörterbuch Haltestellenname → Index
-      stop_coords  — GPS-Koordinaten der Haltestellen
-      threshold    — Verspätungsschwelle in Minuten (3)
-
-    Parameter
-    ---------
-    df : pd.DataFrame
-        Merkmalsmatrix aus build_dataset() (ohne abgeleitete Merkmale —
-        diese werden hier hinzugefügt).
+    Train/Test-Split: 80/20, Klassifikator stratifiziert (gleiche Klassenverteilung
+    in beiden Splits). Regressor ohne Stratifizierung (kontinuierliche Zielgrösse).
     """
     # Abgeleitete Merkmale berechnen
     df = add_derived_features(df)
