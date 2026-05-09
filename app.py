@@ -208,7 +208,7 @@ def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
     return default
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=302, show_spinner=False)
 def fetch_disruptions(dep_date: str) -> list[dict]:
     """
     Lädt aktuelle Fernverkehrs-Störungen aus SBB Open Data.
@@ -330,26 +330,12 @@ def fetch_connections(origin: str,
         to_station = (entry.get("to") or "").lower()
         pass_list  = entry.get("passList") or []
 
-        stop_names = [
-            (s.get("station") or {}).get("name", "").lower()
-            for s in pass_list
-            if isinstance(s, dict)  # ← nur dicts verarbeiten, None/andere überspringen
-        ]
 
-        if pass_list:
-            # passList vorhanden → genau prüfen ob Ziel auf der Route liegt
-            destination_on_route = (
-                dest_lower in to_station
-                or any(dest_lower in s for s in stop_names)
+        destination_on_route = (
+            dest_lower in to_station
+            or not to_station
             )
-        else:
-            # passList fehlt → nur anhand des Endbahnhofs prüfen.
-            # Wenn auch to_station leer ist, Zug trotzdem behalten
-            # (lieber zu viel als zu wenig anzeigen).
-            destination_on_route = (
-                dest_lower in to_station
-                or not to_station
-            )
+        
 
         if not destination_on_route:
             continue
