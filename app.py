@@ -329,9 +329,11 @@ def fetch_connections(origin: str,
         # Richtung prüfen
         to_station = (entry.get("to") or "").lower()
         pass_list  = entry.get("passList") or []
+
         stop_names = [
             (s.get("station") or {}).get("name", "").lower()
             for s in pass_list
+            if isinstance(s, dict)  # ← nur dicts verarbeiten, None/andere überspringen
         ]
 
         if pass_list:
