@@ -1,6 +1,27 @@
-#To Do:
-#1. Datum für eingabe von ec_delay... 01.01.2026 - 31.01.2026
-#2. ZIP Anleitung -> Auspacken und in welchen Ordner
+# ─── SETUP & AUSFÜHRUNG ──────────────────────────────────────────────────────
+#
+# Schritt 1 — Ist-Daten herunterladen:
+#   https://opentransportdata.swiss/de/dataset/istdaten
+#   → Monat auswählen (z.B. Januar 2026), ZIP herunterladen.
+#
+# Schritt 2 — ZIP entpacken:
+#   ZIP öffnen und die enthaltene CSV-Datei (z.B. 2026-01-01_istdaten.csv)
+#   in den Ordner  CS_Project_live/istdaten_cache/  kopieren.
+#   (Ordner manuell erstellen falls nicht vorhanden)
+#
+# Schritt 3 — Skript ausführen (im Ordner CS_Project_live/):
+#   python ec_delay_predictor.py --start 2026-01-01 --end 2026-01-31
+#
+# Ausgabe: ec_models.pkl  (Modell für die Streamlit-App)
+#          ec_delay_dataset.csv  (aufbereitete Trainingsdaten)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Hinweis: Im Rahmen dieser Arbeit wurde KI-Unterstützung (Claude, Anthropic) eingesetzt —
+# primär für Code-Review, Fehlersuche, Überarbeitung von Teilabschnitten sowie die
+# Verbesserung von Lesbarkeit und Dokumentation. Konzeption, Modellwahl und inhaltliche
+# Entscheidungen wurden eigenständig erarbeitet.
+
 
 """
 EC-Verspätungsprediktor — Trainingsskript
@@ -557,6 +578,7 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     # Schlechtwetter-Score: jede Komponente auf [0,1] normiert, dann gewichtet
+    # mit dem Clip wird auf einen gewissen wert gecappt, damit Extremwerte die Skala nicht sprengen
     df["bad_weather_score"] = (
           (df["orig_snow"].clip(0, 5)     / 5)       * 1.5
         + (df["orig_precip"].clip(0, 15)  / 15)      * 1.0

@@ -1,3 +1,8 @@
+# Hinweis: Im Rahmen dieser Arbeit wurde KI-Unterstützung (Claude, Anthropic) eingesetzt —
+# primär für Code-Review, Fehlersuche, Überarbeitung von Teilabschnitten sowie die
+# Verbesserung von Lesbarkeit und Dokumentation. Konzeption, Modellwahl und inhaltliche
+# Entscheidungen wurden eigenständig erarbeitet.
+
 """
 EC-Verspätungsprediktor — Streamlit-App
 Start: streamlit run app.py
