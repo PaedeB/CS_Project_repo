@@ -922,15 +922,7 @@ def main():
 
     _render_model_insights(clf, reg, feature_cols, origin, destination)
 
-    with st.expander("Regressor: erwartete Verspätung nach Uhrzeit", expanded=False):
-        st.caption(
-            "Diese Grafik zeigt ausschliesslich die Vorhersage des "
-            "Regressors. Wetter und Route bleiben konstant."
-        )
-        st.image(
-            plot_regression_by_hour(reg, feature_cols, origin, destination),
-            use_container_width=True,
-        )
+
 
 
 
@@ -975,7 +967,16 @@ def _render_model_insights(clf, reg, feature_cols: list[str],
             "steht für pünktlich, Orange für verspätet."
         )
         st.image(plot_single_tree(clf, feature_cols), use_container_width=True)
-
+        
+    with st.expander("Regressor: erwartete Verspätung nach Uhrzeit", expanded=False):
+        st.caption(
+            "Diese Grafik zeigt ausschliesslich die Vorhersage des "
+            "Regressors. Wetter und Route bleiben konstant."
+        )
+        st.image(
+            plot_regression_by_hour(reg, feature_cols, origin, destination),
+            use_container_width=True,
+        )
 
 
 
