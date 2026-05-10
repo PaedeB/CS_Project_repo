@@ -900,7 +900,7 @@ def main():
     with st.expander((f"**{icon_orig} Abfahrt — {destination}**"), expanded=False):
         weather_card(w_dest)
 
-    st.subheader("Übersicht für die verschiedenen Verbindungen")
+    st.subheader("Übersicht für die verschiedenen Abfahrtszeiten")
 
     with st.expander("**Bei welchen Zeiten sind welche Verpsätungen erwartet? (bei konstantem Wetter)**", expanded=False):
         st.caption(
