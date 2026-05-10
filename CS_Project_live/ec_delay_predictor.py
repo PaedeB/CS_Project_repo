@@ -1,3 +1,7 @@
+#To Do:
+#1. Datum für eingabe von ec_delay... 01.01.2026 - 31.01.2026
+#2. ZIP Anleitung -> Auspacken und in welchen Ordner
+
 """
 EC-Verspätungsprediktor — Trainingsskript
 
@@ -9,6 +13,8 @@ Zürich HB ↔ St. Gallen:
 Verwendung:
     python ec_delay_predictor.py --start 2024-01-01 --end 2024-12-31
 
+
+    
 Ist-Daten: https://opentransportdata.swiss/de/dataset/istdaten
            → CSV/GZ-Dateien in istdaten_cache/ ablegen.
 Ausgabe:   ec_models.pkl, ec_delay_dataset.csv
@@ -43,7 +49,6 @@ Abgedeckte Haltestellen (beide Richtungen)
 """
 
 import argparse
-import gzip
 import time
 import warnings
 from datetime import date, datetime, timedelta
@@ -130,9 +135,7 @@ _IST_COLS = [
 # EC-Züge werden ausschliesslich über LINIEN_TEXT = "EC" identifiziert.
 
 def _open_csv(path: Path):
-    """Öffnet eine Ist-Daten-Datei direkt (.csv) oder als GZ-Archiv (.gz)."""
-    if path.suffix == ".gz":
-        return gzip.open(path, "rt", encoding="utf-8-sig")
+    """Öffnet eine Ist-Daten-Datei direkt (.csv)"""
     return open(path, encoding="utf-8-sig")
 
 
@@ -206,46 +209,18 @@ def parse_istdaten_file(path: Path) -> pd.DataFrame:
     except Exception as exc:
         print(f"    ⚠️  {path.name}: Fehler beim Lesen — {exc}")
         return pd.DataFrame()
+    #Ergänzung durch Chatgpt: Direktes einlesen der CSV - hatte einige Probleme
 
     # Spaltennamen vereinheitlichen (Grossschreibung, keine Leerzeichen)
     df.columns = [c.upper().strip() for c in df.columns]
 
-# ── Auf EC-Züge filtern ────────────────────────────────────────────────────
-    if "LINIEN_TEXT" not in df.columns:
-        print(f"    ⚠️  {path.name}: Spalte LINIEN_TEXT fehlt — Datei wird übersprungen.")
-        return pd.DataFrame()
-
+    # ── Auf EC-Züge filtern ────────────────────────────────────────────────────
     ec_mask = df["LINIEN_TEXT"].str.strip().str.upper().str.startswith("EC", na=False)
     df = df[ec_mask]
     
     # ── Auf Haltestellen der Strecke filtern ──────────────────────────────────
     if "HALTESTELLEN_NAME" in df.columns:
         df = df[df["HALTESTELLEN_NAME"].isin(set(STOPS_ORDERED))]
-
-    # ── Diagnose, wenn keine passenden Zeilen gefunden wurden ─────────────────
-    if df.empty:
-        with _open_csv(path) as fh:
-            diag = pd.read_csv(fh, sep=sep, dtype=str, low_memory=False, nrows=5000)
-        diag.columns = [c.upper().strip() for c in diag.columns]
-
-        pid_vals = (
-            diag["PRODUKT_ID"].str.strip().unique()[:12].tolist()
-            if "PRODUKT_ID" in diag.columns else ["Spalte fehlt"]
-        )
-        lin_ec = (
-            diag[diag["LINIEN_TEXT"].str.upper().str.startswith("EC", na=False)]
-            ["LINIEN_TEXT"].unique()[:8].tolist()
-            if "LINIEN_TEXT" in diag.columns else []
-        )
-        stops = (
-            set(diag["HALTESTELLEN_NAME"].str.strip().unique()) & set(STOPS_ORDERED)
-            if "HALTESTELLEN_NAME" in diag.columns else set()
-        )
-        print(f"    ⚠️  {path.name}: Keine EC-Streckendaten gefunden.")
-        print(f"         PRODUKT_ID-Werte (Stichprobe): {pid_vals}")
-        print(f"         LINIEN_TEXT mit 'EC':          {lin_ec}")
-        print(f"         Streckenhaltestellen in Datei: {stops or 'keine'}")
-        return pd.DataFrame()
 
     # ── Zeilen in strukturierte Datensätze umwandeln ──────────────────────────
     rows = []
@@ -255,6 +230,7 @@ def parse_istdaten_file(path: Path) -> pd.DataFrame:
         stop     = str(row.get("HALTESTELLEN_NAME", "")).strip()
         linien   = str(row.get("LINIEN_TEXT", "")).strip()
         fahrt_id = str(row.get("FAHRT_BEZEICHNER", "")).strip()
+    #dieser Teil wurde mit KI untestützt erstellt
 
         # FAELLT_AUS_TF: "1" oder "true" bedeutet die Fahrt ist ausgefallen
         cancelled = str(row.get("FAELLT_AUS_TF", "0")).strip() in ("1", "true", "True")
@@ -274,7 +250,7 @@ def parse_istdaten_file(path: Path) -> pd.DataFrame:
             "arr_status":    str(row.get("AN_PROGNOSE_STATUS", "")).strip(),
             "cancelled":     cancelled,
         })
-
+        #Umwandlung in einheitliche Spaltennahmen
     return pd.DataFrame(rows)
 
 
@@ -296,7 +272,7 @@ def build_trip_delays(paths: list[Path]) -> pd.DataFrame:
             frames.append(df)
 
     if not frames:
-        print("  ⚠️  Keine Daten geladen — bitte CSV-Dateien in istdaten_cache/ ablegen.")
+        print("Keine Daten geladen — bitte CSV-Dateien in istdaten_cache/ ablegen.")
         return pd.DataFrame()
 
     raw = pd.concat(frames, ignore_index=True)
@@ -396,7 +372,7 @@ def build_trip_delays(paths: list[Path]) -> pd.DataFrame:
 def _date_from_filename(path: Path) -> date | None:
     """Extrahiert ein Datum aus dem Dateinamen (z. B. 2024-03-15_istdaten.csv).
     Gibt None zurück, wenn kein Datum erkannt wurde."""
-    name = path.stem.replace(".csv", "")   # Doppelte Endung ".csv.gz" berücksichtigen
+    name = path.stem.replace(".csv", "")   # Doppelte Endung ".csv" berücksichtigen
     for fmt in ("%Y-%m-%d", "%Y%m%d", "%d.%m.%Y"):
         # Dateinamen anhand verschiedener Trennzeichen zerlegen und jeden Teil prüfen
         for part in name.split("_") + name.split("-") + [name]:
@@ -410,7 +386,7 @@ def _date_from_filename(path: Path) -> date | None:
 def _find_cached_files(start_date: str | None = None,
                        end_date:   str | None = None) -> list[Path]:
     """
-    Gibt alle CSV/GZ-Dateien aus dem Cache im angegebenen Datumsbereich zurück.
+    Gibt alle CSV-Dateien aus dem Cache im angegebenen Datumsbereich zurück.
     Dateien ohne erkennbares Datum im Namen werden immer eingeschlossen.
     """
     if not ISTDATEN_CACHE_DIR.exists():
@@ -786,13 +762,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--start",
-        default="2023-01-01",
-        help="Startdatum des Trainingszeitraums (YYYY-MM-DD, Standard: 2023-01-01)",
+        default="2026-01-01",
+        help="Startdatum des Trainingszeitraums (YYYY-MM-DD, Standard: 2026-01-01)",
     )
     parser.add_argument(
         "--end",
-        default="2024-12-31",
-        help="Enddatum des Trainingszeitraums (YYYY-MM-DD, Standard: 2024-12-31)",
+        default="2026-03-31",
+        help="Enddatum des Trainingszeitraums (YYYY-MM-DD, Standard: 2026-03-31)",
     )
     args = parser.parse_args()
 

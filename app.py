@@ -130,94 +130,94 @@ def weather_for_hour(weather_by_hour: dict | None, hour: int) -> dict:
 
 # ─── STÖRUNGEN AUS SBB OPEN DATA ─────────────────────────────────────────────
 
-SBB_DISRUPTIONS_URL = (
-    "https://data.sbb.ch/api/explore/v2.1/catalog/datasets"
-    "/rail-traffic-information/records"
-)
+# SBB_DISRUPTIONS_URL = (
+#     "https://data.sbb.ch/api/explore/v2.1/catalog/datasets"
+#     "/rail-traffic-information/records"
+# )
 
-_DESC_KEYS = ("description", "title", "beschreibung", "meldungstext")
-_CAUSE_KEYS = ("cause", "ursache", "grund")
-_STATUS_KEYS = ("status",)
-_TYPE_KEYS = ("transporttype", "verkehrsart", "type")
-
-
-def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
-    """Gibt den ersten vorhandenen Wert aus einer Liste von Feldnamen zurück."""
-    for key in keys:
-        value = item.get(key)
-        if value:
-            return str(value).strip()
-    return default
+# _DESC_KEYS = ("description", "title", "beschreibung", "meldungstext")
+# _CAUSE_KEYS = ("cause", "ursache", "grund")
+# _STATUS_KEYS = ("status",)
+# _TYPE_KEYS = ("transporttype", "verkehrsart", "type")
 
 
-@st.cache_data(ttl=302, show_spinner=False)
-def fetch_disruptions(dep_date: str) -> list[dict]:
-    """Aktuelle Fernverkehrs-Störungen von SBB Open Data."""
-    day_start = f"{dep_date}T00:00:00"
-    day_end = f"{dep_date}T23:59:59"
+# def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
+#     """Gibt den ersten vorhandenen Wert aus einer Liste von Feldnamen zurück."""
+#     for key in keys:
+#         value = item.get(key)
+#         if value:
+#             return str(value).strip()
+#     return default
 
-    results = []
-    for where_clause in [
-        (
-            "transporttype=\"Fernverkehr\""
-            f" AND starttime<=date\"{day_end}\""
-            f" AND (endtime>=date\"{day_start}\" OR endtime IS NULL)"
-        ),
-        "transporttype=\"Fernverkehr\"",
-        None,
-    ]:
-        try:
-            params: dict = {"limit": 100, "order_by": "starttime desc"}
-            if where_clause:
-                params["where"] = where_clause
 
-            resp = requests.get(SBB_DISRUPTIONS_URL, params=params, timeout=12)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-            break
-        except Exception:
-            results = []
+# @st.cache_data(ttl=302, show_spinner=False)
+# def fetch_disruptions(dep_date: str) -> list[dict]:
+#     """Aktuelle Fernverkehrs-Störungen von SBB Open Data."""
+#     day_start = f"{dep_date}T00:00:00"
+#     day_end = f"{dep_date}T23:59:59"
 
-    output = []
-    for item in results:
-        description = _pick(item, _DESC_KEYS)
-        cause = _pick(item, _CAUSE_KEYS).lower()
-        desc_lower = description.lower()
-        status = _pick(item, _STATUS_KEYS).lower()
+#     results = []
+#     for where_clause in [
+#         (
+#             "transporttype=\"Fernverkehr\""
+#             f" AND starttime<=date\"{day_end}\""
+#             f" AND (endtime>=date\"{day_start}\" OR endtime IS NULL)"
+#         ),
+#         "transporttype=\"Fernverkehr\"",
+#         None,
+#     ]:
+#         try:
+#             params: dict = {"limit": 100, "order_by": "starttime desc"}
+#             if where_clause:
+#                 params["where"] = where_clause
 
-        transport = _pick(item, _TYPE_KEYS).lower()
-        if transport and "fern" not in transport and "zug" not in transport \
-                and "rail" not in transport and "train" not in transport:
-            continue
+#             resp = requests.get(SBB_DISRUPTIONS_URL, params=params, timeout=12)
+#             resp.raise_for_status()
+#             results = resp.json().get("results", [])
+#             break
+#         except Exception:
+#             results = []
 
-        if any(k in cause or k in desc_lower
-               for k in ("bau", "construction", "works",
-                         "gleisarbeiten", "unterhaltsarbeiten", "baustelle")):
-            dtype = "construction"
-        elif any(k in cause or k in desc_lower
-                 for k in ("signal", "strom", "power", "stellwerk", "weiche")):
-            dtype = "signal_fault"
-        elif any(k in cause or k in desc_lower
-                 for k in ("wetter", "weather", "schnee", "snow", "wind", "sturm")):
-            dtype = "weather_event"
-        else:
-            dtype = "other"
+#     output = []
+#     for item in results:
+#         description = _pick(item, _DESC_KEYS)
+#         cause = _pick(item, _CAUSE_KEYS).lower()
+#         desc_lower = description.lower()
+#         status = _pick(item, _STATUS_KEYS).lower()
 
-        if any(k in status or k in desc_lower
-               for k in ("ausfall", "cancelled", "cancel", "totalausfall", "fällt aus")):
-            severity = 3
-        elif any(k in desc_lower for k in ("verspätung", "delay", "störung", "unterbruch")):
-            severity = 2
-        else:
-            severity = 1
+#         transport = _pick(item, _TYPE_KEYS).lower()
+#         if transport and "fern" not in transport and "zug" not in transport \
+#                 and "rail" not in transport and "train" not in transport:
+#             continue
 
-        output.append({
-            "type": dtype,
-            "severity": severity,
-            "description": description or "(keine Beschreibung)",
-        })
+#         if any(k in cause or k in desc_lower
+#                for k in ("bau", "construction", "works",
+#                          "gleisarbeiten", "unterhaltsarbeiten", "baustelle")):
+#             dtype = "construction"
+#         elif any(k in cause or k in desc_lower
+#                  for k in ("signal", "strom", "power", "stellwerk", "weiche")):
+#             dtype = "signal_fault"
+#         elif any(k in cause or k in desc_lower
+#                  for k in ("wetter", "weather", "schnee", "snow", "wind", "sturm")):
+#             dtype = "weather_event"
+#         else:
+#             dtype = "other"
 
-    return output
+#         if any(k in status or k in desc_lower
+#                for k in ("ausfall", "cancelled", "cancel", "totalausfall", "fällt aus")):
+#             severity = 3
+#         elif any(k in desc_lower for k in ("verspätung", "delay", "störung", "unterbruch")):
+#             severity = 2
+#         else:
+#             severity = 1
+
+#         output.append({
+#             "type": dtype,
+#             "severity": severity,
+#             "description": description or "(keine Beschreibung)",
+#         })
+
+#     return output
 
 # ─── EC-FAHRPLAN 2026 ────────────────────────────────────────────────────────
 # Hardcodiert; Frühzug (Index 0) entfällt Sa + So.
@@ -377,7 +377,7 @@ def route_diagram(origin: str, destination: str) -> str:
         else:
             parts.append(f"〇 ~~{stop}~~")
 
-    arrow = " → " if forward else " ← "
+    arrow = " → "
     return arrow.join(parts)
 
 
@@ -738,8 +738,8 @@ def main():
     delay_mins = float(reg.predict(X)[0])
 
     # ── SBB-Störungen laden ───────────────────────────────────────────────────
-    with st.spinner("SBB-Störungen werden geprüft …"):
-        disruptions = fetch_disruptions(dep_date.isoformat())
+    # with st.spinner("SBB-Störungen werden geprüft …"):
+    #     disruptions = fetch_disruptions(dep_date.isoformat())
 
     # ── Ergebnis anzeigen ─────────────────────────────────────────────────────
     st.subheader("Vorhersage")
@@ -771,8 +771,6 @@ def main():
 
     # ── Wetterkarten ──────────────────────────────────────────────────────────
     st.subheader("Wetterbedingungen")
-    w_col1 = st.columns(1)[0]
-    w_col2 = st.columns(1)[0]
 
     def weather_card(w: dict):
         """Kompakte Wetterkarte mit Hauptwerten."""
@@ -807,24 +805,24 @@ def main():
         weather_card(w_dest)
 
     # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
-    if disruptions:
-        st.subheader("⚠️ Aktive SBB-Störungen")
-        severity_labels = ["Info", "Leicht", "Erheblich", "Ausfall"]
-        type_labels = {
-            "construction": "Baustelle / Gleisarbeiten",
-            "signal_fault": "Signal- oder Stellwerksstörung",
-            "weather_event": "Wetterbedingte Störung",
-            "other": "Sonstige Störung",
-        }
-        for disruption in disruptions:
-            severity = severity_labels[min(disruption["severity"], 3)]
-            dtype = type_labels.get(disruption["type"], "Sonstige Störung")
-            st.warning(
-                f"**{dtype}** · {severity}\n\n"
-                + (disruption.get("description") or "")
-            )
-    else:
-        st.success("Keine aktiven Fernverkehrs-Störungen für dieses Datum gefunden.")
+    # if disruptions:
+    #     st.subheader("⚠️ Aktive SBB-Störungen")
+    #     severity_labels = ["Info", "Leicht", "Erheblich", "Ausfall"]
+    #     type_labels = {
+    #         "construction": "Baustelle / Gleisarbeiten",
+    #         "signal_fault": "Signal- oder Stellwerksstörung",
+    #         "weather_event": "Wetterbedingte Störung",
+    #         "other": "Sonstige Störung",
+    #     }
+    #     for disruption in disruptions:
+    #         severity = severity_labels[min(disruption["severity"], 3)]
+    #         dtype = type_labels.get(disruption["type"], "Sonstige Störung")
+    #         st.warning(
+    #             f"**{dtype}** · {severity}\n\n"
+    #             + (disruption.get("description") or "")
+    #         )
+    # else:
+    #     st.success("Keine aktiven Fernverkehrs-Störungen für dieses Datum gefunden.")
 
     _render_model_insights(clf, reg, feature_cols, origin, destination)
 
