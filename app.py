@@ -944,7 +944,7 @@ def _render_model_insights(clf, reg, feature_cols: list[str],
                            origin: str, destination: str) -> None:
     """Erklärende Modellgrafiken in Expandern anzeigen."""
     st.divider()
-    st.subheader("📊 Modelleinblicke")
+    st.subheader("📊 Modelleinblicke (für Neugierige)")
 
     with st.expander("Merkmalswichtigkeiten", expanded=False):
         st.caption(
