@@ -859,7 +859,7 @@ def main():
         unsafe_allow_html=True,
     )
     st.write("")
-    st.caption(f"SBB-Schwelle: ≥{threshold} min = verspätet")
+    st.caption(f"SBB-Schwelle: ≥{threshold} min = verspätet, >= 10 min ist eine deutlisch Verspätung")
 
     m1, m2 = st.columns(2)
     m1.metric("Verspätungsrisiko", f"{delay_prob:.0%}")
@@ -897,12 +897,12 @@ def main():
     with st.expander((f"**{icon_dest} Abfahrt — {origin}**"), expanded=False):
         weather_card(w_orig)
 
-    with st.expander((f"**{icon_orig} Abfahrt — {destination}**"), expanded=False):
+    with st.expander((f"**{icon_orig} Ankunft — {destination}**"), expanded=False):
         weather_card(w_dest)
 
     st.subheader("Übersicht für die verschiedenen Abfahrtszeiten")
 
-    with st.expander("**Bei welchen Zeiten sind welche Verpsätungen erwartet? (bei konstantem Wetter)**", expanded=False):
+    with st.expander("**Bei welchen Zeiten sind welche Verspätungen erwartet? (bei konstantem Wetter)**", expanded=False):
         st.caption(
             "Diese Grafik zeigt ausschliesslich die Vorhersage des "
             "Regressors. Wetter und Route bleiben konstant."
