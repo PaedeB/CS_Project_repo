@@ -864,7 +864,7 @@ def main():
         unsafe_allow_html=True,
     )
     st.write("")
-    st.caption(f"SBB-Schwelle: ≥{threshold} min = verspätet, >= 10 min ist eine deutlisch Verspätung")
+    st.caption(f"SBB-Schwelle: ≥{threshold} min = verspätet, >= 10 min deutliche Verspätung")
 
     m1, m2 = st.columns(2)
     m1.metric("Verspätungsrisiko", f"{delay_prob:.0%}")
