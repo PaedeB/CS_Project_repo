@@ -156,6 +156,7 @@ def _open_csv(path: Path):
     """Öffnet eine Ist-Daten-Datei direkt (.csv)"""
     return open(path, encoding="utf-8-sig")
 
+# Standardisierung der Datumsformate
 
 def _normalize_date(date_str: str) -> str:
     """
@@ -203,6 +204,7 @@ def _parse_ist_time(date_str: str, cell) -> datetime | None:
 
     return None  # Kein Format erkannt
 
+# Öffnen und einlesen der CSV - Dateien
 
 def parse_istdaten_file(path: Path) -> pd.DataFrame:
     """
@@ -386,6 +388,7 @@ def build_trip_delays(paths: list[Path]) -> pd.DataFrame:
     print(f"      {len(df):,} Segment-Datensätze  |  verspätet ≥{DELAY_THRESHOLD_MIN} min: {pct:.1%}")
     return df
 
+# Nimmt das jeweilige Datum des .csv Files
 
 def _date_from_filename(path: Path) -> date | None:
     """Extrahiert ein Datum aus dem Dateinamen (z. B. 2024-03-15_istdaten.csv).
@@ -576,6 +579,21 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Schlechtwetter-Score: jede Komponente auf [0,1] normiert, dann gewichtet
     # mit dem Clip wird auf einen gewissen wert gecappt, damit Extremwerte die Skala nicht sprengen
+    
+    # Begründung weshalb noch ein Bad Weather Score berechnet wird:
+    # 1. Datenmangel (bei den ausgewählten Datensätzen kann es sein, dass wenige oder
+    # gar keine Extremdaten vorkommen -> ergänzung als Feature um dies zu berücksichtigen)
+    # 2. Es wird davon ausgegangen dass Schnee, Regen, Böen und die Sicht
+    # die Verspätung massgeblich beeinflussen. Da wenige Extremfälle vorhanden sind
+    # wird dies noch manuell hinzugefügt.
+    # 
+    # Bei einer Modelltrainierung über mehrere Jahre (was langfristig zu emfehlen wäre)
+    # würde dieser Teil entfernt werden damit das Modell selbst diese Gewichtung vornimmt.
+    # Für diese Gruppenarbeit wurde dies eingeschränkt da die Datengrösse der Zügen von 01-03.26
+    # bereits eine Grösse von 50 GB hatte. Entsprechend hatte das Training des Modelles länger
+    # gedauert.
+
+
     df["bad_weather_score"] = (
           (df["orig_snow"].clip(0, 5)     / 5)       * 1.5
         + (df["orig_precip"].clip(0, 15)  / 15)      * 1.0

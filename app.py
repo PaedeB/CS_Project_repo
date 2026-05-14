@@ -214,6 +214,7 @@ def _wv(w: dict, key: str, default=np.nan):
     v = w.get(key)
     return v if v is not None else default
 
+# Ergänzung um die korrekte Zuordnung zu dest oder orig Wetter zu machen
 
 def weather_record(w: dict, prefix: str) -> dict:
     """Wetter-Dict in Merkmalseinträge mit Präfix umwandeln."""
@@ -231,6 +232,7 @@ def weather_record(w: dict, prefix: str) -> dict:
         f"{prefix}_weather_code": _wv(w, "weather_code",      0),
     }
 
+# Build der Features für das Model (Datum / Uhrzeit bezogene Features)
 
 def build_features(origin: str, destination: str, dep_dt: datetime,
                    w_orig: dict, w_dest: dict,
