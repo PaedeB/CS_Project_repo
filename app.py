@@ -899,10 +899,10 @@ def main():
     icon_dest = weather_icon(int(w_dest.get("weather_code") or 0))
     icon_orig = weather_icon(int(w_orig.get("weather_code") or 0))
 
-    with st.expander((f"**{icon_dest} Abfahrt — {origin}**"), expanded=False):
+    with st.expander((f"**{icon_orig} Abfahrt — {origin}**"), expanded=False):
         weather_card(w_orig)
 
-    with st.expander((f"**{icon_orig} Ankunft — {destination}**"), expanded=False):
+    with st.expander((f"**{icon_dest} Ankunft — {destination}**"), expanded=False):
         weather_card(w_dest)
 
     st.subheader("Übersicht für die verschiedenen Abfahrtszeiten")
