@@ -540,42 +540,25 @@ def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
 # zeitlich die beste Zeit den Zug zu nehmen ist (be kontstantem Wetter und Datum)
 
 def plot_regression_by_hour(reg, feature_cols: list[str],
-                            origin: str, destination: str) -> bytes:
-    """Regressorvorhersage für die tatsächlichen EC-Abfahrtszeiten."""
-    base = {col: 0 for col in feature_cols}
-
+                            origin: str, destination: str,
+                            target_date: date,
+                            orig_weather_all: dict | None,
+                            dest_weather_all: dict | None) -> bytes:
+    """Regressorvorhersage für die tatsächlichen EC-Abfahrtszeiten mit echtem Tageswetter."""
     orig_idx = STOP_TO_IDX[origin]
     dest_idx = STOP_TO_IDX[destination]
 
+    base = {col: 0 for col in feature_cols}
     base.update({
         "direction":             0 if orig_idx < dest_idx else 1,
         "origin_stop_idx":       orig_idx,
         "destination_stop_idx":  dest_idx,
         "segment_length":        abs(dest_idx - orig_idx),
-        "month":                 6,
-        "day_of_week":           2,
-        "week_of_year":          24,
-        "is_weekend":            0,
-        "season":                2,
-        "orig_temp":             12.0,
-        "dest_temp":             12.0,
-        "orig_precip":           0.0,
-        "dest_precip":           0.0,
-        "orig_snow":             0.0,
-        "dest_snow":             0.0,
-        "orig_wind":             12.0,
-        "dest_wind":             12.0,
-        "orig_gusts":            18.0,
-        "dest_gusts":            18.0,
-        "orig_visibility":       10000.0,
-        "dest_visibility":       10000.0,
-        "orig_cloud":            20.0,
-        "dest_cloud":            20.0,
-        "orig_humidity":         60.0,
-        "dest_humidity":         60.0,
-        "orig_pressure":         1015.0,
-        "dest_pressure":         1015.0,
-        "bad_weather_score":     0.0,
+        "month":                 target_date.month,
+        "day_of_week":           target_date.weekday(),
+        "week_of_year":          target_date.isocalendar().week,
+        "is_weekend":            int(target_date.weekday() >= 5),
+        "season":                (target_date.month % 12) // 3,
     })
 
     direction_key = "forward" if orig_idx < dest_idx else "backward"
@@ -587,14 +570,39 @@ def plot_regression_by_hour(reg, feature_cols: list[str],
     x_labels = []
 
     for h, m in schedule_times:
+        w_orig = weather_for_hour(orig_weather_all, h)
+        w_dest = weather_for_hour(dest_weather_all, h)
+
         row = {
             **base,
-            "dep_hour": h,
+            "dep_hour":     h,
             "is_rush_hour": int(7 <= h <= 9 or 16 <= h <= 19),
+            **weather_record(w_orig, "orig"),
+            **weather_record(w_dest, "dest"),
         }
 
-        X = pd.DataFrame([row])[feature_cols].fillna(0)
+        orig_snow       = row.get("orig_snow") or 0
+        orig_precip     = row.get("orig_precip") or 0
+        orig_gusts      = row.get("orig_gusts") or 0
+        orig_visibility = row.get("orig_visibility") or 10000
+        orig_temp       = row.get("orig_temp") or 0
 
+        row["bad_weather_score"] = (
+              (min(orig_snow, 5)       / 5)       * 1.5
+            + (min(orig_precip, 15)    / 15)      * 1.0
+            + (min(orig_gusts, 100)    / 100)     * 0.8
+            + ((10_000 - min(orig_visibility, 10_000)) / 10_000) * 0.7
+        )
+        row["extreme_cold"]   = int(orig_temp < -5)
+        row["extreme_heat"]   = int(orig_temp > 33)
+        row["any_snow"]       = int(orig_snow > 0)
+        row["heavy_rain"]     = int(orig_precip > 8)
+        row["low_visibility"] = int(orig_visibility < 1000)
+        row["precip_diff"]    = abs((row.get("dest_precip") or 0) - orig_precip)
+        row["temp_diff"]      = abs((row.get("dest_temp") or 0)   - orig_temp)
+        row["wind_diff"]      = abs((row.get("dest_wind") or 0)   - (row.get("orig_wind") or 0))
+
+        X = pd.DataFrame([row])[feature_cols].fillna(0)
         pred = max(0, float(reg.predict(X)[0]))
         delays.append(pred)
         x_labels.append(f"{h:02d}:{m:02d}")
@@ -603,31 +611,16 @@ def plot_regression_by_hour(reg, feature_cols: list[str],
 
     fig, ax = plt.subplots(figsize=(8, 3.8))
 
-    ax.plot(
-        x_pos,
-        delays,
-        linewidth=2.5,
-        marker="o",
-        markersize=5,
-    )
-
+    ax.plot(x_pos, delays, linewidth=2.5, marker="o", markersize=5)
     ax.set_xticks(x_pos)
-
-    ax.set_xticklabels(
-        x_labels,
-        rotation=45,
-        fontsize=7,
-    )
-
+    ax.set_xticklabels(x_labels, rotation=45, fontsize=7)
     ax.set_ylabel("Erwartete Verspätung (min)", fontsize=9)
     ax.set_xlabel("Abfahrtszeit", fontsize=9)
-
     ax.set_title(
-        f"Regressionsmodell: erwartete Verspätung nach Abfahrtszeit\n"
+        f"Erwartete Verspätung nach Abfahrtszeit — {target_date.strftime('%d.%m.%Y')}\n"
         f"{origin} → {destination}",
         fontsize=10,
     )
-
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
@@ -843,13 +836,14 @@ def main():
 
     st.subheader("Übersicht für die verschiedenen Abfahrtszeiten")
 
-    with st.expander("**Bei welchen Zeiten sind welche Verspätungen erwartet? (bei konstantem Wetter)**", expanded=False):
+    with st.expander("**Bei welchen Zeiten sind welche Verspätungen erwartet?**", expanded=False):
         st.caption(
-            "Diese Grafik zeigt ausschliesslich die Vorhersage des "
-            "Regressors. Wetter und Route bleiben konstant."
+            f"Vorhersage des Regressors für alle EC-Abfahrten am {dep_date.strftime('%d.%m.%Y')} "
+            "mit dem tatsächlichen Tageswetter. So siehst du, welcher Zug heute am wenigsten Verspätung hat."
         )
         st.image(
-            plot_regression_by_hour(reg, feature_cols, origin, destination),
+            plot_regression_by_hour(reg, feature_cols, origin, destination,
+                                    dep_date, orig_weather_all, dest_weather_all),
             use_container_width=True,
         )
     _render_model_insights(clf, reg, feature_cols, origin, destination)
