@@ -36,6 +36,8 @@ st.set_page_config(
 STOPS_ORDERED = ["Zürich HB", "Zürich Flughafen", "Winterthur", "St. Gallen"]
 STOP_TO_IDX = {s: i for i, s in enumerate(STOPS_ORDERED)}
 
+# Koordinaten für den Wetter API - als Dictionary
+
 STOP_COORDS = {
     "Zürich HB":         {"lat": 47.3779, "lon": 8.5403},
     "Zürich Flughafen": {"lat": 47.4504, "lon": 8.5624},
@@ -49,6 +51,8 @@ WEATHER_VARIABLES = [
     "cloud_cover", "relative_humidity_2m", "weather_code", "surface_pressure",
 ]
 
+# Dicitionary für die Beschreibung des WMO-Codes
+
 WMO_DESCRIPTIONS = {
     0: "Klar", 1: "Überwiegend klar", 2: "Teilweise bewölkt", 3: "Bedeckt",
     45: "Nebel", 48: "Raureifnebel",
@@ -60,6 +64,8 @@ WMO_DESCRIPTIONS = {
     85: "Leichte Schneeschauer", 86: "Starke Schneeschauer",
     95: "Gewitter", 96: "Gewitter mit Hagel", 99: "Gewitter mit starkem Hagel",
 }
+
+# Übersetzung der WMO-Wettercodes zu Symoblen für die Webseite
 
 WMO_ICONS = {
     0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
@@ -85,6 +91,11 @@ def load_models():
 
 
 # ─── WETTERDATEN ──────────────────────────────────────────────────────────────
+
+# Laden der Wetterdaten, gleich wie beim ec_delay_predictor.
+# Wichtigste unterscheidung bei vergangenen Daten wird ein anderer API Link genommen
+# somit handelt es sich um eine Unterscheidung zwischen den historischen Daten und
+# den "Forecast"-Wetter.
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_weather(stop: str, target_date: date) -> dict | None:
@@ -133,99 +144,9 @@ def weather_for_hour(weather_by_hour: dict | None, hour: int) -> dict:
     return weather_by_hour[nearest]
 
 
-# ─── STÖRUNGEN AUS SBB OPEN DATA ─────────────────────────────────────────────
-
-# SBB_DISRUPTIONS_URL = (
-#     "https://data.sbb.ch/api/explore/v2.1/catalog/datasets"
-#     "/rail-traffic-information/records"
-# )
-
-# _DESC_KEYS = ("description", "title", "beschreibung", "meldungstext")
-# _CAUSE_KEYS = ("cause", "ursache", "grund")
-# _STATUS_KEYS = ("status",)
-# _TYPE_KEYS = ("transporttype", "verkehrsart", "type")
-
-
-# def _pick(item: dict, keys: tuple[str, ...], default: str = "") -> str:
-#     """Gibt den ersten vorhandenen Wert aus einer Liste von Feldnamen zurück."""
-#     for key in keys:
-#         value = item.get(key)
-#         if value:
-#             return str(value).strip()
-#     return default
-
-
-# @st.cache_data(ttl=302, show_spinner=False)
-# def fetch_disruptions(dep_date: str) -> list[dict]:
-#     """Aktuelle Fernverkehrs-Störungen von SBB Open Data."""
-#     day_start = f"{dep_date}T00:00:00"
-#     day_end = f"{dep_date}T23:59:59"
-
-#     results = []
-#     for where_clause in [
-#         (
-#             "transporttype=\"Fernverkehr\""
-#             f" AND starttime<=date\"{day_end}\""
-#             f" AND (endtime>=date\"{day_start}\" OR endtime IS NULL)"
-#         ),
-#         "transporttype=\"Fernverkehr\"",
-#         None,
-#     ]:
-#         try:
-#             params: dict = {"limit": 100, "order_by": "starttime desc"}
-#             if where_clause:
-#                 params["where"] = where_clause
-
-#             resp = requests.get(SBB_DISRUPTIONS_URL, params=params, timeout=12)
-#             resp.raise_for_status()
-#             results = resp.json().get("results", [])
-#             break
-#         except Exception:
-#             results = []
-
-#     output = []
-#     for item in results:
-#         description = _pick(item, _DESC_KEYS)
-#         cause = _pick(item, _CAUSE_KEYS).lower()
-#         desc_lower = description.lower()
-#         status = _pick(item, _STATUS_KEYS).lower()
-
-#         transport = _pick(item, _TYPE_KEYS).lower()
-#         if transport and "fern" not in transport and "zug" not in transport \
-#                 and "rail" not in transport and "train" not in transport:
-#             continue
-
-#         if any(k in cause or k in desc_lower
-#                for k in ("bau", "construction", "works",
-#                          "gleisarbeiten", "unterhaltsarbeiten", "baustelle")):
-#             dtype = "construction"
-#         elif any(k in cause or k in desc_lower
-#                  for k in ("signal", "strom", "power", "stellwerk", "weiche")):
-#             dtype = "signal_fault"
-#         elif any(k in cause or k in desc_lower
-#                  for k in ("wetter", "weather", "schnee", "snow", "wind", "sturm")):
-#             dtype = "weather_event"
-#         else:
-#             dtype = "other"
-
-#         if any(k in status or k in desc_lower
-#                for k in ("ausfall", "cancelled", "cancel", "totalausfall", "fällt aus")):
-#             severity = 3
-#         elif any(k in desc_lower for k in ("verspätung", "delay", "störung", "unterbruch")):
-#             severity = 2
-#         else:
-#             severity = 1
-
-#         output.append({
-#             "type": dtype,
-#             "severity": severity,
-#             "description": description or "(keine Beschreibung)",
-#         })
-
-#     return output
-
 # ─── EC-FAHRPLAN 2026 ────────────────────────────────────────────────────────
 # Hardcodiert; Frühzug (Index 0) entfällt Sa + So.
+# Hardcodierung für die Fahrtzeiten - für die Dropdownliste und die Plots
 
 _EC_SCHEDULE: dict[str, dict[str, list[tuple[int,int]]]] = {
     "forward": {
@@ -240,6 +161,7 @@ _EC_SCHEDULE: dict[str, dict[str, list[tuple[int,int]]]] = {
     },
 }
 
+# Beschreibung der EC Fahrtnummern
 _EC_TRAIN_NUMBERS: dict[str, list[str]] = {
     "forward":  ["EC 195","EC 197","EC 199","EC 191","EC 193","EC 195","EC 197","EC 199"],
     "backward": ["EC 194","EC 196","EC 198","EC 190","EC 192","EC 194","EC 196","EC 198"],
@@ -284,6 +206,8 @@ def fetch_connections(origin: str,
     return results
 
 # ─── FEATURE-AUFBAU ───────────────────────────────────────────────────────────
+
+# Grundätzlich gleiche Logik zum Aufbauen der Features wie bei ec_delay_predictor.py
 
 def _wv(w: dict, key: str, default=np.nan):
     """Wetterwert mit Fallback aus einem Wörterbuch lesen."""
@@ -361,6 +285,7 @@ def build_features(origin: str, destination: str, dep_dt: datetime,
 
 # ─── UI-HILFSFUNKTIONEN ──────────────────────────────────────────────────────
 
+# Funktion zur visuellen Darstellung der Stops
 def route_diagram(origin: str, destination: str) -> str:
     """Markdown-Darstellung der gewählten Strecke."""
     orig_idx = STOP_TO_IDX[origin]
@@ -385,12 +310,12 @@ def route_diagram(origin: str, destination: str) -> str:
     arrow = " → "
     return arrow.join(parts)
 
-
+# Funktion zur Übersetzung des WMO-Codes zu einem Symbol
 def weather_icon(code: int | None) -> str:
     """Wettersymbol zum WMO-Code."""
     return WMO_ICONS.get(int(code) if code else 0, "🌡️")
 
-
+# Funktion zu Übersetzung des WMO-Codes zu der Beschreibung
 def weather_description(code: int | None) -> str:
     """Deutschsprachige Beschreibung zum WMO-Code."""
     return WMO_DESCRIPTIONS.get(int(code) if code else 0, "Unbekannt")
@@ -407,6 +332,8 @@ def _fig_to_img(fig) -> bytes:
     return buf.read()
 
 
+# Funktion zum Plotten der Wichtigkeiten der Features (Top 15)
+
 def plot_feature_importances(clf, feature_cols: list[str]) -> bytes:
     """Top 15 Merkmalswichtigkeiten des Klassifikators."""
     imp = pd.Series(clf.feature_importances_, index=feature_cols).nlargest(15)
@@ -420,6 +347,10 @@ def plot_feature_importances(clf, feature_cols: list[str]) -> bytes:
     fig.tight_layout()
     return _fig_to_img(fig)
 
+# Plot der Verspätungen pro Stunde 
+# Zeigt bei konstantem Wetter und Datum die Veränderungen pro Uhrzeit
+# Rot = Stündliche Versätungswahrscheinlichkeit
+# Blau = Stündliche erwartete Verspätung (Regression)
 
 def plot_delay_by_hour(clf, reg, feature_cols: list[str],
                        origin: str, destination: str) -> bytes:
@@ -488,6 +419,9 @@ def plot_delay_by_hour(clf, reg, feature_cols: list[str],
     fig.tight_layout()
     return _fig_to_img(fig)
 
+
+# Der Plot stellt dar welche Verspätungswahrscheinlichkeit und Verspätungsdauer
+# erwartet wird wenn sich der Wetterscore verändert
 
 def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
                           origin: str, destination: str) -> bytes:
@@ -574,6 +508,8 @@ def plot_delay_vs_weather(clf, reg, feature_cols: list[str],
     return _fig_to_img(fig)
 
 
+# Zeigt den Random Forrest grafisch (Top 3 Stufen)
+
 def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
     """Einen Entscheidungsbaum aus dem Random Forest visualisieren (3 Ebenen)."""
     estimator = clf.estimators_[0]
@@ -599,6 +535,9 @@ def plot_single_tree(clf, feature_cols: list[str]) -> bytes:
     return _fig_to_img(fig)
 
 # ─── REGRESSIONSPLOT ─────────────────────────────────────────────────────────
+
+# Regressionsplot um den User zu helfen eine Entscheidung zu treffen, wann
+# zeitlich die beste Zeit den Zug zu nehmen ist (be kontstantem Wetter und Datum)
 
 def plot_regression_by_hour(reg, feature_cols: list[str],
                             origin: str, destination: str) -> bytes:
@@ -838,10 +777,7 @@ def main():
     delay_class = clf.predict(X)[0]
     delay_mins = float(reg.predict(X)[0])
 
-    # ── SBB-Störungen laden ───────────────────────────────────────────────────
-    # with st.spinner("SBB-Störungen werden geprüft …"):
-    #     disruptions = fetch_disruptions(dep_date.isoformat())
-
+   
     # ── Ergebnis anzeigen ─────────────────────────────────────────────────────
     st.subheader("Vorhersage")
 
@@ -916,31 +852,7 @@ def main():
             plot_regression_by_hour(reg, feature_cols, origin, destination),
             use_container_width=True,
         )
-
-    # ── SBB-Störungsmeldungen ─────────────────────────────────────────────────
-    # if disruptions:
-    #     st.subheader("⚠️ Aktive SBB-Störungen")
-    #     severity_labels = ["Info", "Leicht", "Erheblich", "Ausfall"]
-    #     type_labels = {
-    #         "construction": "Baustelle / Gleisarbeiten",
-    #         "signal_fault": "Signal- oder Stellwerksstörung",
-    #         "weather_event": "Wetterbedingte Störung",
-    #         "other": "Sonstige Störung",
-    #     }
-    #     for disruption in disruptions:
-    #         severity = severity_labels[min(disruption["severity"], 3)]
-    #         dtype = type_labels.get(disruption["type"], "Sonstige Störung")
-    #         st.warning(
-    #             f"**{dtype}** · {severity}\n\n"
-    #             + (disruption.get("description") or "")
-    #         )
-    # else:
-    #     st.success("Keine aktiven Fernverkehrs-Störungen für dieses Datum gefunden.")
-
     _render_model_insights(clf, reg, feature_cols, origin, destination)
-
-
-
 
 
 # ─── MODELLEINBLICKE ─────────────────────────────────────────────────────────
