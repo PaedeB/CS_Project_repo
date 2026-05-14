@@ -17,7 +17,7 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Hinweis: Im Rahmen dieser Arbeit wurde KI-Unterstützung (Claude, Anthropic) eingesetzt —
+# Hinweis: Im Rahmen dieser Arbeit wurde KI-Unterstützung (Claude, Anthropic 4.6 [01.08.2025]) eingesetzt —
 # primär für Code-Review, Fehlersuche, Überarbeitung von Teilabschnitten sowie die
 # Verbesserung von Lesbarkeit und Dokumentation. Konzeption, Modellwahl und inhaltliche
 # Entscheidungen wurden eigenständig erarbeitet.
@@ -60,9 +60,7 @@ Warum sind SBB-Störungen keine Modellmerkmale?
 Historische Störungen sind über die verwendeten Datenquellen nicht zuverlässig
 abrufbar. Da die historischen Verspätungen aus den Ist-Daten den Einfluss
 vergangener Störungen bereits indirekt enthalten, würden konstant leere
-Störungsspalten dem Modell nichts beibringen. Die Streamlit-App lädt aktuelle
-Störungsmeldungen aus SBB Open Data weiterhin als Kontextanzeige, nutzt sie aber
-nicht als Modellinput.
+Störungsspalten dem Modell nichts beibringen.
 
 Abgedeckte Haltestellen (beide Richtungen)
 ------------------------------------------
@@ -91,6 +89,7 @@ warnings.filterwarnings("ignore")
 # KONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Der EC hält bei den Haltestellen Zürich HB, Zürich Flughaven, Winterthur und St. Gallen
 STOPS_ORDERED = ["Zürich HB", "Zürich Flughafen", "Winterthur", "St. Gallen"]
 STOP_TO_IDX = {s: i for i, s in enumerate(STOPS_ORDERED)}
 
@@ -108,8 +107,6 @@ MODEL_PATH = Path("ec_models.pkl")
 
 # SBB-Definition: Zug gilt als verspätet ab ≥ 3 Minuten Ankunftsverspätung
 DELAY_THRESHOLD_MIN = 3
-
-SEVERE_WEATHER_CODES = {45, 48, 66, 67, 71, 73, 75, 77, 85, 86, 95, 96, 99}
 
 WEATHER_VARIABLES = [
     "temperature_2m",        # Lufttemperatur in 2 m Höhe [°C]
